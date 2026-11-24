@@ -1,0 +1,7 @@
+# applicant CVs are personal data: never commit them
+cvs/
+dist/
+build/
+*.egg-info/
+.DS_Store
+__pycache__/
