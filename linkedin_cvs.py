@@ -9,14 +9,16 @@
     uv run linkedin_cvs.py JOB_ID [...]     only these job posts
     uv run linkedin_cvs.py --limit 3        at most 3 new CVs per job
     uv run linkedin_cvs.py --login          open the window to log in or clear a prompt
+    uv run linkedin_cvs.py --jd JOB_ID      job description and details; no login, no Chrome
 
 No cookies to copy. The first run opens a Chrome window: log in to LinkedIn
 there once. The login is kept in ~/.linkedin_cvs and reused on every later run.
 CVs land in cvs/<job_id>/; ones already there are skipped.
 
-From Python:  from linkedin_cvs import download_cvs; download_cvs()
+From Python:  from linkedin_cvs import download_cvs, job_details
 """
 import argparse
+import html
 import json
 import os
 import random
@@ -25,6 +27,8 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 BASE = "https://www.linkedin.com"
@@ -77,6 +81,66 @@ def pause():
 
 class Stopped(Exception):
     pass
+
+
+def _text(fragment):
+    """Readable text from a piece of HTML: paragraphs and list items become lines."""
+    fragment = re.sub(r"<li[^>]*>", "- ", fragment)
+    fragment = re.sub(r"<br\s*/?>|</p>|</li>|</ul>|</ol>", "\n", fragment)
+    lines = [" ".join(line.split()) for line in html.unescape(re.sub(r"<[^>]+>", "", fragment)).split("\n")]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def parse_job(page):
+    """Fields of LinkedIn's public job posting page. Missing ones come back empty."""
+    def first(pattern):
+        m = re.search(pattern, page, re.S)
+        return _text(m.group(1)) if m else ""
+    desc = re.search(r'show-more-less-html__markup[^>]*>(.*?)</div>', page, re.S)
+    return {
+        "title": first(r'top-card-layout__title[^>]*>(.*?)</h'),
+        "company": first(r'topcard__org-name-link[^>]*>(.*?)</a>'),
+        "location": first(r'<span class="topcard__flavor topcard__flavor--bullet">(.*?)</span>'),
+        "posted": first(r'posted-time-ago__text[^>]*>(.*?)</span>'),
+        "applicants": first(r'num-applicants__caption[^>]*>(.*?)</'),
+        # seniority level, employment type, job function, industries
+        "criteria": {_text(k): _text(v) for k, v in re.findall(
+            r'criteria-subheader">(.*?)</h3>\s*<span[^>]*>(.*?)</span>', page, re.S)},
+        "description": _text(desc.group(1)) if desc else "",
+        "description_html": desc.group(1).strip() if desc else "",
+    }
+
+
+def job_details(job_id):
+    """Public details of a job post as a dict. No login and no Chrome needed."""
+    req = urllib.request.Request(f"{BASE}/jobs-guest/jobs/api/jobPosting/{job_id}",
+                                 headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            page = r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        raise Stopped(f"job {job_id}: HTTP {e.code} (429 = too many requests, wait a minute; otherwise not public or closed)")
+    job = {"job_id": str(job_id), "url": f"{BASE}/jobs/view/{job_id}", **parse_job(page)}
+    if not job["title"]:
+        raise Stopped(f"job {job_id}: no job posting in the response")
+    return job
+
+
+def download_jds(job_ids, out="cvs"):
+    """Save <out>/<job_id>/job.json and job.txt for each job. Returns the job.json paths."""
+    saved = []
+    for n, job_id in enumerate(job_ids):
+        if n:
+            pause()
+        job = job_details(job_id)
+        folder = Path(out) / str(job_id)
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "job.json").write_text(json.dumps(job, indent=2, ensure_ascii=False))
+        (folder / "job.txt").write_text(
+            f"{job['title']}\n{job['company']} | {job['location']}\n{job['url']}\n\n{job['description']}\n")
+        saved.append(folder / "job.json")
+        print(f"job {job_id}: saved {job['title']}")
+    return saved
 
 
 def ensure_display():
@@ -220,6 +284,12 @@ def selftest():
     assert filename("222", "Bo O'Neil") == "Bo_ONeil_222.pdf"
     assert filename("5", "") == "5.pdf"
     assert logged_out(f"{BASE}/uas/login?x=1") and not logged_out(f"{BASE}/hiring/posted-jobs/")
+    job = parse_job('<h2 class="top-card-layout__title x">A &amp; B</h2>'
+                    '<h3 class="description__job-criteria-subheader"> Employment type </h3>\n'
+                    '<span class="t"> Full-time </span>'
+                    '<div class="show-more-less-html__markup y"><p>Hi<br>there</p><ul><li>one</li></ul></div>')
+    assert job["title"] == "A & B" and job["criteria"] == {"Employment type": "Full-time"}
+    assert job["description"] == "Hi\nthere\n- one" and job["company"] == ""
     print("selftest ok")
 
 
@@ -230,16 +300,22 @@ def main():
     p.add_argument("--limit", type=int, help="download at most N new CVs per job")
     p.add_argument("--selftest", action="store_true")
     p.add_argument("--login", action="store_true", help="open the window to log in or clear a prompt")
+    p.add_argument("--jd", action="store_true", help="save the job description and details; no login needed")
     a = p.parse_args()
     if a.selftest:
         return selftest()
     if a.login:
         return login()
     try:
-        saved = download_cvs(a.job_ids, a.out, a.limit)
+        if a.jd:
+            if not a.job_ids:
+                sys.exit("--jd needs at least one job ID")
+            saved = download_jds(a.job_ids, a.out)
+        else:
+            saved = download_cvs(a.job_ids, a.out, a.limit)
     except Stopped as e:
         sys.exit(f"Stopped: {e}")
-    print(f"done: {len(saved)} CVs saved under {a.out}/")
+    print(f"done: {len(saved)} {'job posts' if a.jd else 'CVs'} saved under {a.out}/")
 
 
 if __name__ == "__main__":

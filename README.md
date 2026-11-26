@@ -1,6 +1,6 @@
 # linkedin-cvs
 
-Download the CV of everyone who applied to your LinkedIn job posts, with one command or one function call.
+Download the CV of everyone who applied to your LinkedIn job posts, with one command or one function call. It can also save the job description and details of any public job post, with no login.
 
 It works with the standard LinkedIn hiring dashboard (`linkedin.com/hiring`). It does not work with LinkedIn Recruiter.
 
@@ -13,6 +13,7 @@ It works with the standard LinkedIn hiring dashboard (`linkedin.com/hiring`). It
 - [Log in (one time)](#log-in-one-time)
 - [Command line](#command-line)
 - [Python API](#python-api)
+- [Job description (no login)](#job-description-no-login)
 - [Where the files go](#where-the-files-go)
 - [Running on a server](#running-on-a-server)
 - [How it works](#how-it-works)
@@ -68,6 +69,7 @@ linkedin-cvs 1234567890 2345678901    # several job posts
 linkedin-cvs --limit 3                # at most 3 new CVs per job (good for a first test)
 linkedin-cvs --out /data/cvs          # save somewhere else (default: ./cvs)
 linkedin-cvs --login                  # open the window to log in or clear a prompt
+linkedin-cvs --jd 1234567890          # job description and details only; no login, no Chrome
 linkedin-cvs --selftest               # check the parsing logic; does not contact LinkedIn
 ```
 
@@ -116,6 +118,37 @@ for path in files:
 
 The function blocks until the run finishes. Expect roughly 4 to 9 seconds per CV.
 
+## Job description (no login)
+
+```bash
+linkedin-cvs --jd 1234567890 2345678901
+```
+
+This reads LinkedIn's public job page, so it needs no login and no Chrome, and it does not touch your LinkedIn account. It works for any job post that is publicly visible, including other companies' posts. You must pass the job IDs: without a login the client cannot list your job posts.
+
+Each job gets two files in its folder: `job.json` with every field, and `job.txt` with the title, company, location, link and description as plain text.
+
+```python
+from linkedin_cvs import job_details, download_jds
+
+job = job_details("1234567890")       # returns a dict, saves nothing
+paths = download_jds(["1234567890"])  # saves the files, returns the job.json paths
+```
+
+| Field | Example |
+|---|---|
+| `job_id`, `url` | `"1234567890"`, `"https://www.linkedin.com/jobs/view/1234567890"` |
+| `title` | `"Backend Engineer"` |
+| `company` | `"Example Ltd"` |
+| `location` | `"London, England, United Kingdom"` |
+| `posted` | `"1 week ago"` (relative, as LinkedIn shows it) |
+| `applicants` | `"58 applicants"` (LinkedIn's public count, often rounded) |
+| `criteria` | `{"Seniority level": "...", "Employment type": "...", "Job function": "...", "Industries": "..."}` |
+| `description` | The full description as plain text |
+| `description_html` | The same with LinkedIn's formatting tags |
+
+A field LinkedIn does not show comes back empty. Both functions raise `Stopped` if the job is not public or LinkedIn refuses the request. Several requests in quick succession get `HTTP 429`; wait a minute and run again.
+
 ## Where the files go
 
 ```
@@ -123,6 +156,8 @@ cvs/
   1234567890/                       one folder per job post, named by job ID
     Jane_Doe_30000000001.pdf        <Applicant_Name>_<applicationId>.pdf
     Sam_Lee_30000000002.pdf
+    job.json                        only with --jd: job details
+    job.txt                         only with --jd: readable description
 ```
 
 - The number at the end of each filename is LinkedIn's application ID. The client uses it to know which CVs it already has, so do not rename files inside `out` if you want re-runs to skip them.
@@ -188,6 +223,7 @@ It waits a random 4 to 9 seconds between requests. Do not lower this.
 | `Stopped: HTTP ... (logged out, or LinkedIn challenged the request)` | LinkedIn refused a request. | Run `linkedin-cvs --login` and check the account for a verification or restriction notice. Wait before running again. |
 | `Stopped: resume link returned HTTP ..., not a PDF` | The download link did not return a resume. | Same as above. |
 | `job ...: 0 applicants` for a job that has applicants | The logged-in account cannot see that job's applicants. | Log in with the account that owns the job. |
+| `Stopped: job ...: HTTP 429` (with `--jd`) | Too many public requests in a short time. | Wait a minute, then run again. |
 | `no resume: <name>` | That applicant has no resume attached. | Nothing; the run continues. |
 | Error about the profile already being in use | A client Chrome window is still open. | Close it, then run again. |
 | Files are named by ID only | Names could not be read, for example LinkedIn is not set to English. | The CVs are still correct. Set the account language to English for names. |
