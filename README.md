@@ -322,6 +322,9 @@ ssh -N -R 1080 youruser@yourserver
 
 This opens a SOCKS proxy on the server at `localhost:1080` that exits through the office connection. It requires OpenSSH 7.6 or newer on both sides, and it lasts for as long as the command runs.
 
+> [!IMPORTANT]
+> The office computer must stay switched on, awake and connected to the internet for the whole of every run. If it sleeps, shuts down or loses its connection, the tunnel closes and the run stops. For a nightly run, that means leaving it on overnight with sleep disabled. A small always-on device, such as a mini PC, is better suited to this than a personal work computer.
+
 **2. Use it for every command that opens Chrome**, including the sign-in:
 
 ```bash
@@ -333,6 +336,7 @@ From Python: `download_cvs(proxy="socks5://localhost:1080")`.
 
 | Behaviour | Detail |
 |---|---|
+| Computer must stay on | The tunnel exists only while the office computer is on and the `ssh` command is running. |
 | No fallback | If the tunnel is down, the run stops with `Stopped: could not reach LinkedIn through ...`. It never falls back to the server's own address. |
 | Be consistent | Use the proxy on every run, or on none. Alternating between the office address and the server address is itself a location mismatch. |
 | Scope | The proxy applies to CV downloads and `--login`. `--jd` does not use it; it involves no account. |
