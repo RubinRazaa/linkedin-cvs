@@ -8,6 +8,8 @@
     uv run linkedin_cvs.py                  every open job post
     uv run linkedin_cvs.py JOB_ID [...]     only these job posts
     uv run linkedin_cvs.py --limit 3        at most 3 new CVs per job
+    uv run linkedin_cvs.py --slow           long pauses, for unattended overnight runs
+    uv run linkedin_cvs.py --slow --until 06:00   nightly run: stop at 06:00, continue next night
     uv run linkedin_cvs.py --login          open the window to log in or clear a prompt
     uv run linkedin_cvs.py --jd JOB_ID      job description and details; no login, no Chrome
 
@@ -27,6 +29,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -75,8 +78,30 @@ def logged_out(url):
     return any(part in url for part in LOGGED_OUT)
 
 
+QUICK = (4, 9)      # seconds between requests; do not lower
+SLOW = (15, 40)     # --slow: for unattended runs where time does not matter
+REST_EVERY = 20     # --slow: after this many CVs...
+REST = (120, 300)   # ...stop for this many seconds
+_pace = QUICK
+
+
+def set_slow(on):
+    global _pace
+    _pace = SLOW if on else QUICK
+
+
 def pause():
-    time.sleep(random.uniform(4, 9))  # human-ish pace; do not lower
+    time.sleep(random.uniform(*_pace))
+
+
+def deadline(until, now=None):
+    """The next time the clock shows 'HH:MM' (today, or tomorrow if already past). None if unset."""
+    if not until:
+        return None
+    now = now or datetime.now()
+    hh, mm = datetime.strptime(until, "%H:%M").timetuple()[3:5]
+    end = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    return end if end > now else end + timedelta(days=1)
 
 
 class Stopped(Exception):
@@ -126,8 +151,9 @@ def job_details(job_id):
     return job
 
 
-def download_jds(job_ids, out="cvs"):
+def download_jds(job_ids, out="cvs", slow=False):
     """Save <out>/<job_id>/job.json and job.txt for each job. Returns the job.json paths."""
+    set_slow(slow)
     saved = []
     for n, job_id in enumerate(job_ids):
         if n:
@@ -227,10 +253,15 @@ class Client:
         return data
 
 
-def download_cvs(job_ids=None, out="cvs", limit=None):
-    """Download new CVs. job_ids=None means every open job post. Returns saved paths."""
+def download_cvs(job_ids=None, out="cvs", limit=None, slow=False, until=None):
+    """Download new CVs. job_ids=None means every open job post. Returns saved paths.
+
+    until="06:00" stops cleanly at that local time; the next run continues with the rest.
+    """
     from playwright.sync_api import sync_playwright
 
+    set_slow(slow)
+    end = deadline(until)
     saved = []
     with sync_playwright() as pw:
         c = Client(pw)
@@ -248,6 +279,9 @@ def download_cvs(job_ids=None, out="cvs", limit=None):
                 todo = [(i, n) for i, n in people.items() if i not in have][:limit]
                 print(f"job {job_id}: {len(people)} applicants, {len(todo)} to download")
                 for app_id, name in todo:
+                    if end and datetime.now() >= end:
+                        print(f"reached {until}: stopping, the next run continues")
+                        return saved
                     pause()
                     url = c.pdf_url(job_id, app_id)
                     if not url:
@@ -256,7 +290,9 @@ def download_cvs(job_ids=None, out="cvs", limit=None):
                     path = folder / filename(app_id, name)
                     path.write_bytes(c.pdf(url))
                     saved.append(path)
-                    print(f"  saved {path.name}")
+                    print(f"  saved {path.name}", flush=True)
+                    if slow and len(saved) % REST_EVERY == 0:
+                        time.sleep(random.uniform(*REST))
         finally:
             c.close()
     return saved
@@ -290,6 +326,13 @@ def selftest():
                     '<div class="show-more-less-html__markup y"><p>Hi<br>there</p><ul><li>one</li></ul></div>')
     assert job["title"] == "A & B" and job["criteria"] == {"Employment type": "Full-time"}
     assert job["description"] == "Hi\nthere\n- one" and job["company"] == ""
+    night = datetime(2026, 1, 1, 23, 0)
+    assert deadline("06:00", night) == datetime(2026, 1, 2, 6, 0)
+    assert deadline("23:30", night) == datetime(2026, 1, 1, 23, 30) and deadline(None) is None
+    set_slow(True)
+    assert _pace == SLOW and SLOW[0] > QUICK[1]
+    set_slow(False)
+    assert _pace == QUICK
     print("selftest ok")
 
 
@@ -298,6 +341,10 @@ def main():
     p.add_argument("job_ids", nargs="*", help="default: every open job post")
     p.add_argument("--out", default="cvs")
     p.add_argument("--limit", type=int, help="download at most N new CVs per job")
+    p.add_argument("--slow", action="store_true",
+                   help="15-40 s between requests and a few minutes' rest every 20 CVs")
+    p.add_argument("--until", metavar="HH:MM", type=lambda v: deadline(v) and v,
+                   help="stop cleanly at this local time; the next run continues")
     p.add_argument("--selftest", action="store_true")
     p.add_argument("--login", action="store_true", help="open the window to log in or clear a prompt")
     p.add_argument("--jd", action="store_true", help="save the job description and details; no login needed")
@@ -310,9 +357,9 @@ def main():
         if a.jd:
             if not a.job_ids:
                 sys.exit("--jd needs at least one job ID")
-            saved = download_jds(a.job_ids, a.out)
+            saved = download_jds(a.job_ids, a.out, a.slow)
         else:
-            saved = download_cvs(a.job_ids, a.out, a.limit)
+            saved = download_cvs(a.job_ids, a.out, a.limit, a.slow, a.until)
     except Stopped as e:
         sys.exit(f"Stopped: {e}")
     print(f"done: {len(saved)} {'job posts' if a.jd else 'CVs'} saved under {a.out}/")
