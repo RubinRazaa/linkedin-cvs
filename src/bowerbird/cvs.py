@@ -1,32 +1,5 @@
-#!/usr/bin/env python3
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["playwright"]
-# ///
-"""Download the CV of everyone who applied to your LinkedIn job posts.
-
-    uv run bowerbird.py                  every open job post
-    uv run bowerbird.py JOB_ID [...]     only these job posts
-    uv run bowerbird.py --limit 3        at most 3 new CVs per job
-    uv run bowerbird.py --slow           long pauses, for unattended overnight runs
-    uv run bowerbird.py --slow --until 06:00   nightly run: stop at 06:00, continue next night
-    uv run bowerbird.py --proxy socks5://localhost:1080   send Chrome through your own network
-    uv run bowerbird.py --login          open the window to log in or clear a prompt
-    uv run bowerbird.py --jd JOB_ID      job description and details; no login, no Chrome
-    uv run bowerbird.py --index          also write applicants.csv in each job folder
-    uv run bowerbird.py --json           print one JSON result on stdout, for calling from an app
-
-No cookies to copy. The first run opens a Chrome window: log in to LinkedIn
-there once. The login is kept in ~/.bowerbird and reused on every later run.
-CVs land in cvs/<job_id>/ next to job.json and job.txt (the job description);
-CVs already there are skipped.
-
-From Python:  from bowerbird import download_cvs, job_details
-"""
-import argparse
-import contextlib
+"""Applicant CVs from the hiring dashboard, through a real logged-in Chrome window."""
 import csv
-import html
 import json
 import os
 import random
@@ -34,14 +7,13 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
-from datetime import datetime, timedelta
-import urllib.error
-import urllib.request
+from datetime import datetime
 from pathlib import Path
 
-BASE = "https://www.linkedin.com"
+from .core import BASE, REST, REST_EVERY, Stopped, deadline, pause, set_slow
+from .jobs import save_jd
+
 PROFILE = Path.home() / ".bowerbird" / "chrome-profile"
 VIEWER = "com.linkedin.sdui.flagshipnav.hiring.appeval.ResumeViewer"
 PAGE_SIZE = 30
@@ -84,103 +56,6 @@ def filename(app_id, name):
 
 def logged_out(url):
     return any(part in url for part in LOGGED_OUT)
-
-
-QUICK = (4, 9)      # seconds between requests; do not lower
-SLOW = (15, 40)     # --slow: for unattended runs where time does not matter
-REST_EVERY = 20     # --slow: after this many CVs...
-REST = (120, 300)   # ...stop for this many seconds
-_pace = QUICK
-
-
-def set_slow(on):
-    global _pace
-    _pace = SLOW if on else QUICK
-
-
-def pause():
-    time.sleep(random.uniform(*_pace))
-
-
-def deadline(until, now=None):
-    """The next time the clock shows 'HH:MM' (today, or tomorrow if already past). None if unset."""
-    if not until:
-        return None
-    now = now or datetime.now()
-    hh, mm = datetime.strptime(until, "%H:%M").timetuple()[3:5]
-    end = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
-    return end if end > now else end + timedelta(days=1)
-
-
-class Stopped(Exception):
-    pass
-
-
-def _text(fragment):
-    """Readable text from a piece of HTML: paragraphs and list items become lines."""
-    fragment = re.sub(r"<li[^>]*>", "- ", fragment)
-    fragment = re.sub(r"<br\s*/?>|</p>|</li>|</ul>|</ol>", "\n", fragment)
-    lines = [" ".join(line.split()) for line in html.unescape(re.sub(r"<[^>]+>", "", fragment)).split("\n")]
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
-
-
-def parse_job(page):
-    """Fields of LinkedIn's public job posting page. Missing ones come back empty."""
-    def first(pattern):
-        m = re.search(pattern, page, re.S)
-        return _text(m.group(1)) if m else ""
-    desc = re.search(r'show-more-less-html__markup[^>]*>(.*?)</div>', page, re.S)
-    return {
-        "title": first(r'top-card-layout__title[^>]*>(.*?)</h'),
-        "company": first(r'topcard__org-name-link[^>]*>(.*?)</a>'),
-        "location": first(r'<span class="topcard__flavor topcard__flavor--bullet">(.*?)</span>'),
-        "posted": first(r'posted-time-ago__text[^>]*>(.*?)</span>'),
-        "applicants": first(r'num-applicants__caption[^>]*>(.*?)</'),
-        # seniority level, employment type, job function, industries
-        "criteria": {_text(k): _text(v) for k, v in re.findall(
-            r'criteria-subheader">(.*?)</h3>\s*<span[^>]*>(.*?)</span>', page, re.S)},
-        "description": _text(desc.group(1)) if desc else "",
-        "description_html": desc.group(1).strip() if desc else "",
-    }
-
-
-def job_details(job_id):
-    """Public details of a job post as a dict. No login and no Chrome needed."""
-    req = urllib.request.Request(f"{BASE}/jobs-guest/jobs/api/jobPosting/{job_id}",
-                                 headers={"User-Agent": "Mozilla/5.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            page = r.read().decode("utf-8", "replace")
-    except urllib.error.HTTPError as e:
-        raise Stopped(f"job {job_id}: HTTP {e.code} (429 = too many requests, wait a minute; otherwise not public or closed)")
-    job = {"job_id": str(job_id), "url": f"{BASE}/jobs/view/{job_id}", **parse_job(page)}
-    if not job["title"]:
-        raise Stopped(f"job {job_id}: no job posting in the response")
-    return job
-
-
-def download_jds(job_ids, out="cvs", slow=False):
-    """Save <out>/<job_id>/job.json and job.txt for each job. Returns the job.json paths."""
-    set_slow(slow)
-    saved = []
-    for n, job_id in enumerate(job_ids):
-        if n:
-            pause()
-        folder = Path(out) / str(job_id)
-        job = save_jd(job_id, folder)
-        saved.append(folder / "job.json")
-        print(f"job {job_id}: saved {job['title']}")
-    return saved
-
-
-def save_jd(job_id, folder):
-    """Write job.json and job.txt into folder. Returns the job dict."""
-    job = job_details(job_id)
-    folder.mkdir(parents=True, exist_ok=True)
-    (folder / "job.json").write_text(json.dumps(job, indent=2, ensure_ascii=False))
-    (folder / "job.txt").write_text(
-        f"{job['title']}\n{job['company']} | {job['location']}\n{job['url']}\n\n{job['description']}\n")
-    return job
 
 
 def write_index(folder, people):
@@ -364,86 +239,3 @@ def login(proxy=None):
         c = Client(pw, proxy)
         print("Window open. Close it when LinkedIn shows your job posts.")
         c.page.wait_for_event("close", timeout=0)
-
-
-def selftest():
-    sample = ('x APPLICANTS_TABLE_ROW_STATE_111 y APPLICANTS_TABLE_ROW_STATE_222 '
-              'APPLICANTS_TABLE_ROW_STATE_111 ["Ann Lee was moved to Shortlist."] '
-              '["Bo O\'Neil was moved to Shortlist."] '
-              '"https://www.linkedin.com/dms/prv/document/media/v2/A/doc-pdf-analyzed/B/0/1?m=1&t=x" ')
-    assert parse_applicants(sample) == [("111", "Ann Lee"), ("222", "Bo O'Neil")]
-    assert parse_applicants("APPLICANTS_TABLE_ROW_STATE_5") == [("5", "")]
-    assert parse_pdf_url(sample).endswith("/0/1?m=1&t=x")
-    assert parse_pdf_url("nothing") is None
-    assert filename("222", "Bo O'Neil") == "Bo_ONeil_222.pdf"
-    assert filename("5", "") == "5.pdf"
-    assert logged_out(f"{BASE}/uas/login?x=1") and not logged_out(f"{BASE}/hiring/posted-jobs/")
-    job = parse_job('<h2 class="top-card-layout__title x">A &amp; B</h2>'
-                    '<h3 class="description__job-criteria-subheader"> Employment type </h3>\n'
-                    '<span class="t"> Full-time </span>'
-                    '<div class="show-more-less-html__markup y"><p>Hi<br>there</p><ul><li>one</li></ul></div>')
-    assert job["title"] == "A & B" and job["criteria"] == {"Employment type": "Full-time"}
-    assert job["description"] == "Hi\nthere\n- one" and job["company"] == ""
-    night = datetime(2026, 1, 1, 23, 0)
-    assert deadline("06:00", night) == datetime(2026, 1, 2, 6, 0)
-    assert deadline("23:30", night) == datetime(2026, 1, 1, 23, 30) and deadline(None) is None
-    set_slow(True)
-    assert _pace == SLOW and SLOW[0] > QUICK[1]
-    set_slow(False)
-    assert _pace == QUICK
-    with tempfile.TemporaryDirectory() as d:
-        (Path(d) / "Ann_Lee_111.pdf").write_bytes(b"%PDF")
-        write_index(Path(d), {"111": ("Ann Lee", "in review"), "222": ("", "rejected")})
-        assert (Path(d) / "applicants.csv").read_text().splitlines() == [
-            "application_id,name,stage,file", "111,Ann Lee,in review,Ann_Lee_111.pdf", "222,,rejected,"]
-    print("selftest ok")
-
-
-def main():
-    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("job_ids", nargs="*", help="default: every open job post")
-    p.add_argument("--out", default="cvs")
-    p.add_argument("--limit", type=int, help="download at most N new CVs per job")
-    p.add_argument("--slow", action="store_true",
-                   help="15-40 s between requests and a few minutes' rest every 20 CVs")
-    p.add_argument("--until", metavar="HH:MM", type=lambda v: deadline(v) and v,
-                   help="stop cleanly at this local time; the next run continues")
-    p.add_argument("--proxy", metavar="URL",
-                   help="send Chrome through this proxy, e.g. socks5://localhost:1080")
-    p.add_argument("--index", action="store_true",
-                   help="also write applicants.csv (id, name, stage, file) in each job folder")
-    p.add_argument("--json", action="store_true",
-                   help="print one JSON result on stdout; progress goes to stderr")
-    p.add_argument("--selftest", action="store_true")
-    p.add_argument("--login", action="store_true", help="open the window to log in or clear a prompt")
-    p.add_argument("--jd", action="store_true", help="save the job description and details; no login needed")
-    a = p.parse_args()
-    if a.selftest:
-        return selftest()
-    if a.jd and not a.job_ids:
-        sys.exit("--jd needs at least one job ID")
-    report = {"saved": [], "no_resume": [], "stopped": None}
-    error = None
-    # With --json, stdout carries the result only.
-    with contextlib.redirect_stdout(sys.stderr if a.json else sys.stdout):
-        try:
-            if a.login:
-                return login(a.proxy)
-            if a.jd:
-                report["saved"] = download_jds(a.job_ids, a.out, a.slow)
-            else:
-                download_cvs(a.job_ids, a.out, a.limit, a.slow, a.until, a.proxy, a.index, report)
-        except Stopped as e:
-            error = str(e)
-        else:
-            print(f"done: {len(report['saved'])} {'job posts' if a.jd else 'CVs'} saved under {a.out}/")
-    if a.json:
-        print(json.dumps({"ok": error is None, "stopped": error or report["stopped"],
-                          "saved": [str(f) for f in report["saved"]],
-                          "no_resume": report["no_resume"]}))
-    if error:
-        sys.exit(f"Stopped: {error}")
-
-
-if __name__ == "__main__":
-    main()

@@ -68,7 +68,7 @@ pip install git+https://github.com/RubinRazaa/bowerbird
 
 This installs the `bowerbird` command and the `bowerbird` Python module.
 
-To install from a local copy of the repository, run `pip install .` in its folder. To run without installing, replace `bowerbird` with `uv run bowerbird.py` in any command below.
+To install from a local copy of the repository, run `pip install .` in its folder. To run from a copy of the repository without installing, replace `bowerbird` with `uv run bowerbird` in any command below.
 
 ## Quick start
 
@@ -123,7 +123,6 @@ bowerbird [JOB_ID ...] [options]
 | `--index` | Also write `applicants.csv` in each job folder. See [Output](#output). |
 | `--json` | Print one JSON result on standard output. See [JSON result](#json-result). |
 | `--login` | Open the Chrome window to sign in or dismiss a LinkedIn prompt. |
-| `--selftest` | Check the parsing logic. Does not contact LinkedIn. |
 
 The job ID is the number in the job's LinkedIn URL: `linkedin.com/jobs/view/1234567890`, or the value after `jobId=`.
 
