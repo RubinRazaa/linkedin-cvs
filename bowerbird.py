@@ -5,23 +5,23 @@
 # ///
 """Download the CV of everyone who applied to your LinkedIn job posts.
 
-    uv run linkedin_cvs.py                  every open job post
-    uv run linkedin_cvs.py JOB_ID [...]     only these job posts
-    uv run linkedin_cvs.py --limit 3        at most 3 new CVs per job
-    uv run linkedin_cvs.py --slow           long pauses, for unattended overnight runs
-    uv run linkedin_cvs.py --slow --until 06:00   nightly run: stop at 06:00, continue next night
-    uv run linkedin_cvs.py --proxy socks5://localhost:1080   send Chrome through your own network
-    uv run linkedin_cvs.py --login          open the window to log in or clear a prompt
-    uv run linkedin_cvs.py --jd JOB_ID      job description and details; no login, no Chrome
-    uv run linkedin_cvs.py --index          also write applicants.csv in each job folder
-    uv run linkedin_cvs.py --json           print one JSON result on stdout, for calling from an app
+    uv run bowerbird.py                  every open job post
+    uv run bowerbird.py JOB_ID [...]     only these job posts
+    uv run bowerbird.py --limit 3        at most 3 new CVs per job
+    uv run bowerbird.py --slow           long pauses, for unattended overnight runs
+    uv run bowerbird.py --slow --until 06:00   nightly run: stop at 06:00, continue next night
+    uv run bowerbird.py --proxy socks5://localhost:1080   send Chrome through your own network
+    uv run bowerbird.py --login          open the window to log in or clear a prompt
+    uv run bowerbird.py --jd JOB_ID      job description and details; no login, no Chrome
+    uv run bowerbird.py --index          also write applicants.csv in each job folder
+    uv run bowerbird.py --json           print one JSON result on stdout, for calling from an app
 
 No cookies to copy. The first run opens a Chrome window: log in to LinkedIn
-there once. The login is kept in ~/.linkedin_cvs and reused on every later run.
+there once. The login is kept in ~/.bowerbird and reused on every later run.
 CVs land in cvs/<job_id>/ next to job.json and job.txt (the job description);
 CVs already there are skipped.
 
-From Python:  from linkedin_cvs import download_cvs, job_details
+From Python:  from bowerbird import download_cvs, job_details
 """
 import argparse
 import contextlib
@@ -42,7 +42,7 @@ import urllib.request
 from pathlib import Path
 
 BASE = "https://www.linkedin.com"
-PROFILE = Path.home() / ".linkedin_cvs" / "chrome-profile"
+PROFILE = Path.home() / ".bowerbird" / "chrome-profile"
 VIEWER = "com.linkedin.sdui.flagshipnav.hiring.appeval.ResumeViewer"
 PAGE_SIZE = 30
 VIRTUAL_DISPLAY = ":99"  # used on Linux servers with no screen
@@ -211,6 +211,9 @@ class Client:
         from playwright.sync_api import Error
 
         self.xvfb = ensure_display()
+        before_rename = Path.home() / ".linkedin_cvs"  # keep the login from the old name
+        if before_rename.exists() and not PROFILE.parent.exists():
+            before_rename.rename(PROFILE.parent)
         PROFILE.mkdir(parents=True, exist_ok=True)
         # ponytail: visible Chrome window each run; go headless only if that proves safe.
         self.ctx = playwright.chromium.launch_persistent_context(

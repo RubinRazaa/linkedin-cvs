@@ -1,4 +1,4 @@
-# linkedin-cvs
+# bowerbird
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -6,8 +6,8 @@
 A command-line tool and Python library that downloads the CVs of applicants to your LinkedIn job posts, and exports the description and details of any public job post.
 
 ```bash
-linkedin-cvs                  # download every new CV from every open job post
-linkedin-cvs --jd 1234567890  # export a job description; no login required
+bowerbird                  # download every new CV from every open job post
+bowerbird --jd 1234567890  # export a job description; no login required
 ```
 
 It works with the standard LinkedIn hiring dashboard (`linkedin.com/hiring`). LinkedIn Recruiter is not supported.
@@ -55,29 +55,29 @@ It works with the standard LinkedIn hiring dashboard (`linkedin.com/hiring`). Li
 ## Installation
 
 ```bash
-pip install git+https://github.com/RubinRazaa/linkedin-cvs
+pip install git+https://github.com/RubinRazaa/bowerbird
 ```
 
-This installs the `linkedin-cvs` command and the `linkedin_cvs` Python module.
+This installs the `bowerbird` command and the `bowerbird` Python module.
 
-To install from a local copy of the repository, run `pip install .` in its folder. To run without installing, replace `linkedin-cvs` with `uv run linkedin_cvs.py` in any command below.
+To install from a local copy of the repository, run `pip install .` in its folder. To run without installing, replace `bowerbird` with `uv run bowerbird.py` in any command below.
 
 ## Quick start
 
 **1. Sign in once.**
 
 ```bash
-linkedin-cvs --login
+bowerbird --login
 ```
 
 A Chrome window opens on LinkedIn. Sign in, complete any verification LinkedIn requests, confirm that **Manage job posts** lists your jobs, and close the window.
 
-The session is stored in `~/.linkedin_cvs/` and reused by every later run. It is separate from your regular Chrome profiles.
+The session is stored in `~/.bowerbird/` and reused by every later run. It is separate from your regular Chrome profiles.
 
 **2. Run a small test.**
 
 ```bash
-linkedin-cvs --limit 3
+bowerbird --limit 3
 ```
 
 ```
@@ -92,7 +92,7 @@ done: 3 CVs saved under cvs/
 **3. Download everything.**
 
 ```bash
-linkedin-cvs
+bowerbird
 ```
 
 Run `--login` again only when LinkedIn ends the session, or to change accounts: sign out in that window, then sign in with the other account.
@@ -100,7 +100,7 @@ Run `--login` again only when LinkedIn ends the session, or to change accounts: 
 ## Command-line reference
 
 ```
-linkedin-cvs [JOB_ID ...] [options]
+bowerbird [JOB_ID ...] [options]
 ```
 
 | Argument or option | Description |
@@ -122,11 +122,11 @@ The job ID is the number in the job's LinkedIn URL: `linkedin.com/jobs/view/1234
 **Examples**
 
 ```bash
-linkedin-cvs 1234567890               # one job post
-linkedin-cvs 1234567890 2345678901    # several job posts
-linkedin-cvs --out /data/cvs          # a different output folder
-linkedin-cvs --slow --until 06:00     # nightly run
-linkedin-cvs --jd 1234567890          # job description only
+bowerbird 1234567890               # one job post
+bowerbird 1234567890 2345678901    # several job posts
+bowerbird --out /data/cvs          # a different output folder
+bowerbird --slow --until 06:00     # nightly run
+bowerbird --jd 1234567890          # job description only
 ```
 
 **Exit status.** `0` on success. On failure the command exits with a non-zero status and prints one line that begins with `Stopped:` and states the reason.
@@ -136,7 +136,7 @@ linkedin-cvs --jd 1234567890          # job description only
 With `--json`, standard output contains exactly one JSON object, printed when the run ends. Progress lines and the `Stopped:` line go to standard error. Use it when another program starts the run and needs the outcome.
 
 ```bash
-linkedin-cvs --json --out /data/cvs
+bowerbird --json --out /data/cvs
 ```
 
 ```json
@@ -153,7 +153,7 @@ linkedin-cvs --json --out /data/cvs
 ## Python API
 
 ```python
-from linkedin_cvs import download_cvs, Stopped
+from bowerbird import download_cvs, Stopped
 
 try:
     files = download_cvs()
@@ -188,7 +188,7 @@ The call blocks until the run is complete. Allow about 7 seconds per CV at the q
 ## Job descriptions
 
 ```bash
-linkedin-cvs --jd 1234567890 2345678901
+bowerbird --jd 1234567890 2345678901
 ```
 
 Job descriptions are read from LinkedIn's public job page. This requires no login and no Chrome, and does not involve your LinkedIn account. It works for any publicly visible job post.
@@ -200,7 +200,7 @@ Each job produces two files in its folder: `job.json` with every field, and `job
 A CV run writes the same two files automatically for every job it processes, unless they already exist. `--jd` is needed only to export a description without downloading CVs, or to refresh one. If the description cannot be fetched, the CV run reports it and continues.
 
 ```python
-from linkedin_cvs import job_details, download_jds
+from bowerbird import job_details, download_jds
 
 job = job_details("1234567890")        # returns a dict; writes nothing
 paths = download_jds(["1234567890"])   # writes the files; returns the job.json paths
@@ -237,7 +237,7 @@ The slow pace places less load on LinkedIn, which reduces the likelihood of the 
 ### Nightly run
 
 ```bash
-linkedin-cvs --slow --until 06:00
+bowerbird --slow --until 06:00
 ```
 
 This command is the complete nightly job. It:
@@ -255,17 +255,17 @@ Start it once each evening with the scheduler you already use: cron, your own ap
 Run `crontab -e` and add one line:
 
 ```
-0 23 * * * flock -n /tmp/linkedin-cvs.lock /full/path/to/linkedin-cvs --slow --until 06:00 --out /data/cvs >> /data/linkedin-cvs.log 2>&1
+0 23 * * * flock -n /tmp/bowerbird.lock /full/path/to/bowerbird --slow --until 06:00 --out /data/cvs >> /data/bowerbird.log 2>&1
 ```
 
 | Part | Purpose |
 |---|---|
 | `0 23 * * *` | Starts the run at 23:00 every day, in the server's time zone. |
 | `flock -n ...lock` | Skips the run if the previous one is still active, so runs never overlap. `flock` is not available on macOS; omit it there. |
-| `/full/path/to/linkedin-cvs` | The absolute path printed by `which linkedin-cvs`. |
+| `/full/path/to/bowerbird` | The absolute path printed by `which bowerbird`. |
 | `>> ...log 2>&1` | Appends all output, including any `Stopped:` line, to a log file. |
 
-Sign in with `linkedin-cvs --login` before the first scheduled run. A scheduled run cannot sign in: if the session has ended, it waits 5 minutes and then stops with `Stopped: not logged in to LinkedIn`.
+Sign in with `bowerbird --login` before the first scheduled run. A scheduled run cannot sign in: if the session has ended, it waits 5 minutes and then stops with `Stopped: not logged in to LinkedIn`.
 
 One run per night is sufficient. Activity that occurs only in the middle of the night is itself a recognisable pattern, so a start time near the end of your working day is the more cautious choice.
 
@@ -275,13 +275,13 @@ An agent that schedules or runs this tool needs the following:
 
 | Topic | Guidance |
 |---|---|
-| Command | `linkedin-cvs --slow --until 06:00 --out <folder>`, once per night. Never run two at the same time. |
+| Command | `bowerbird --slow --until 06:00 --out <folder>`, once per night. Never run two at the same time. |
 | Success | Exit status `0`. Each new file is printed as `  saved <filename>`. The final line is `done: N CVs saved under <folder>/`. |
 | Failure | Non-zero exit status and one line that begins with `Stopped:`. Do not retry automatically; report the line to a person. |
 | Machine-readable result | Add `--json`; standard output is then one JSON object. See [JSON result](#json-result). |
-| Sign-in | Must be completed by a person with `linkedin-cvs --login`. Never give an agent the LinkedIn password. |
+| Sign-in | Must be completed by a person with `bowerbird --login`. Never give an agent the LinkedIn password. |
 | Output | All files are under `<folder>/<job_id>/`. Re-running is safe: existing CVs are skipped. |
-| Job descriptions | `linkedin-cvs --jd <job_id> ...` requires no login. |
+| Job descriptions | `bowerbird --jd <job_id> ...` requires no login. |
 
 ## Output
 
@@ -312,7 +312,7 @@ A sign-in from a data-centre address is unfamiliar to LinkedIn. Expect a verific
 
 ```bash
 sudo apt install -y xvfb x11vnc libatomic1
-pip install git+https://github.com/RubinRazaa/linkedin-cvs
+pip install git+https://github.com/RubinRazaa/bowerbird
 playwright install --with-deps chrome
 ```
 
@@ -321,7 +321,7 @@ playwright install --with-deps chrome
 On the server:
 
 ```bash
-linkedin-cvs --login &                                    # starts the virtual display and Chrome
+bowerbird --login &                                    # starts the virtual display and Chrome
 sleep 5 && x11vnc -display :99 -localhost -nopw -once &   # shares that display locally
 ```
 
@@ -357,8 +357,8 @@ This opens a SOCKS proxy on the server at `localhost:1080` that exits through th
 **2. Use it for every command that opens Chrome**, including the sign-in:
 
 ```bash
-linkedin-cvs --login --proxy socks5://localhost:1080
-linkedin-cvs --slow --until 06:00 --proxy socks5://localhost:1080
+bowerbird --login --proxy socks5://localhost:1080
+bowerbird --slow --until 06:00 --proxy socks5://localhost:1080
 ```
 
 From Python: `download_cvs(proxy="socks5://localhost:1080")`.
@@ -385,10 +385,10 @@ Requests are issued from within the signed-in LinkedIn page, so the session neve
 
 | Message or symptom | Cause | Resolution |
 |---|---|---|
-| `Log in to LinkedIn in the Chrome window that just opened` | There is no stored session, or it has ended. | Sign in within 5 minutes, or run `linkedin-cvs --login`. |
-| `Stopped: not logged in to LinkedIn` | The saved session has ended and nobody signed in within 5 minutes. | Run `linkedin-cvs --login` and sign in. |
-| `Stopped: no open job posts visible` | The job posts page lists no open jobs. A LinkedIn prompt may be covering the page, or the account has none. | Run `linkedin-cvs --login` and inspect the page, or pass job IDs explicitly. |
-| `Stopped: HTTP ... (logged out, or LinkedIn challenged the request)` | LinkedIn declined a request. | Run `linkedin-cvs --login` and check the account for a verification or restriction notice. Wait before the next run. |
+| `Log in to LinkedIn in the Chrome window that just opened` | There is no stored session, or it has ended. | Sign in within 5 minutes, or run `bowerbird --login`. |
+| `Stopped: not logged in to LinkedIn` | The saved session has ended and nobody signed in within 5 minutes. | Run `bowerbird --login` and sign in. |
+| `Stopped: no open job posts visible` | The job posts page lists no open jobs. A LinkedIn prompt may be covering the page, or the account has none. | Run `bowerbird --login` and inspect the page, or pass job IDs explicitly. |
+| `Stopped: HTTP ... (logged out, or LinkedIn challenged the request)` | LinkedIn declined a request. | Run `bowerbird --login` and check the account for a verification or restriction notice. Wait before the next run. |
 | `Stopped: could not reach LinkedIn through ...` | The proxy or tunnel is not running, or the network is down. | Restart the tunnel, then run again. |
 | `Stopped: resume link returned HTTP ..., not a PDF` | The download link did not return a resume. | As above. |
 | `Stopped: job ...: HTTP 429` (with `--jd`) | Too many public requests in a short period. | Wait a minute, then run again. |
