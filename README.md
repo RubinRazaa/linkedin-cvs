@@ -112,6 +112,8 @@ linkedin-cvs [JOB_ID ...] [options]
 | `--until HH:MM` | Stop cleanly at this local time. The next run continues with the remainder. |
 | `--proxy URL` | Send Chrome's traffic through a proxy, for example `socks5://localhost:1080`. See [Using your own network from a server](#using-your-own-network-from-a-server). |
 | `--jd` | Export job descriptions for the given job IDs instead of CVs. No login required. |
+| `--index` | Also write `applicants.csv` in each job folder. See [Output](#output). |
+| `--json` | Print one JSON result on standard output. See [JSON result](#json-result). |
 | `--login` | Open the Chrome window to sign in or dismiss a LinkedIn prompt. |
 | `--selftest` | Check the parsing logic. Does not contact LinkedIn. |
 
@@ -129,6 +131,25 @@ linkedin-cvs --jd 1234567890          # job description only
 
 **Exit status.** `0` on success. On failure the command exits with a non-zero status and prints one line that begins with `Stopped:` and states the reason.
 
+### JSON result
+
+With `--json`, standard output contains exactly one JSON object, printed when the run ends. Progress lines and the `Stopped:` line go to standard error. Use it when another program starts the run and needs the outcome.
+
+```bash
+linkedin-cvs --json --out /data/cvs
+```
+
+```json
+{"ok": true, "stopped": null, "saved": ["/data/cvs/1234567890/Jane_Doe_30000000001.pdf"], "no_resume": ["30000000002"]}
+```
+
+| Field | Description |
+|---|---|
+| `ok` | `false` when the run failed. The exit status is non-zero in that case. |
+| `stopped` | Why the run ended early: the failure reason, or `"reached 06:00"` after a planned `--until` stop (`ok` stays `true`). `null` when the run completed. |
+| `saved` | Paths of the files saved during this run, including those saved before a failure. |
+| `no_resume` | Application IDs of applicants who have no resume to download. |
+
 ## Python API
 
 ```python
@@ -145,7 +166,7 @@ for path in files:
     ...  # for example, upload `path` to the storage folder for `job_id`
 ```
 
-### `download_cvs(job_ids=None, out="cvs", limit=None, slow=False, until=None, proxy=None)`
+### `download_cvs(job_ids=None, out="cvs", limit=None, slow=False, until=None, proxy=None, index=False, report=None)`
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -155,6 +176,8 @@ for path in files:
 | `slow` | `bool` | `False` | Use the slow pace. |
 | `until` | `str` (`"HH:MM"`) or `None` | `None` | Stop cleanly at this local time and return the files saved so far. |
 | `proxy` | `str` or `None` | `None` | Proxy URL for Chrome, for example `"socks5://localhost:1080"`. |
+| `index` | `bool` | `False` | Also write `applicants.csv` in each job folder. |
+| `report` | `dict` or `None` | `None` | A dict that the call fills with `saved`, `no_resume` and `stopped`. It is updated as the run proceeds, so it holds the partial result when `Stopped` is raised. |
 
 **Returns** a list of `pathlib.Path`, one for each CV saved during this call. CVs that already existed are skipped and are not included, so the list contains exactly the new files.
 
@@ -173,6 +196,8 @@ Job descriptions are read from LinkedIn's public job page. This requires no logi
 Job IDs are required. Without a login, the client cannot list the job posts that belong to you.
 
 Each job produces two files in its folder: `job.json` with every field, and `job.txt` with the title, company, location, link and description as plain text.
+
+A CV run writes the same two files automatically for every job it processes, unless they already exist. `--jd` is needed only to export a description without downloading CVs, or to refresh one. If the description cannot be fetched, the CV run reports it and continues.
 
 ```python
 from linkedin_cvs import job_details, download_jds
@@ -240,7 +265,7 @@ Run `crontab -e` and add one line:
 | `/full/path/to/linkedin-cvs` | The absolute path printed by `which linkedin-cvs`. |
 | `>> ...log 2>&1` | Appends all output, including any `Stopped:` line, to a log file. |
 
-Sign in with `linkedin-cvs --login` before the first scheduled run. A scheduled run cannot sign in: if the session has ended, it waits 5 minutes and then fails.
+Sign in with `linkedin-cvs --login` before the first scheduled run. A scheduled run cannot sign in: if the session has ended, it waits 5 minutes and then stops with `Stopped: not logged in to LinkedIn`.
 
 One run per night is sufficient. Activity that occurs only in the middle of the night is itself a recognisable pattern, so a start time near the end of your working day is the more cautious choice.
 
@@ -253,6 +278,7 @@ An agent that schedules or runs this tool needs the following:
 | Command | `linkedin-cvs --slow --until 06:00 --out <folder>`, once per night. Never run two at the same time. |
 | Success | Exit status `0`. Each new file is printed as `  saved <filename>`. The final line is `done: N CVs saved under <folder>/`. |
 | Failure | Non-zero exit status and one line that begins with `Stopped:`. Do not retry automatically; report the line to a person. |
+| Machine-readable result | Add `--json`; standard output is then one JSON object. See [JSON result](#json-result). |
 | Sign-in | Must be completed by a person with `linkedin-cvs --login`. Never give an agent the LinkedIn password. |
 | Output | All files are under `<folder>/<job_id>/`. Re-running is safe: existing CVs are skipped. |
 | Job descriptions | `linkedin-cvs --jd <job_id> ...` requires no login. |
@@ -264,9 +290,12 @@ cvs/
 └── 1234567890/                      one folder per job post, named by job ID
     ├── Jane_Doe_30000000001.pdf     <Applicant_Name>_<applicationId>.pdf
     ├── Sam_Lee_30000000002.pdf
-    ├── job.json                     written by --jd: all job details
-    └── job.txt                      written by --jd: readable description
+    ├── job.json                     all job details
+    ├── job.txt                      readable job description
+    └── applicants.csv               with --index: one row per applicant
 ```
+
+- **Applicant index.** With `--index`, each job folder gets `applicants.csv` with the columns `application_id`, `name`, `stage` (`in review`, `shortlisted` or `rejected`) and `file`. It lists every applicant, and `file` is empty for anyone whose CV is not on disk. The file is rewritten on each run.
 
 - **File names.** The number at the end of each CV file name is LinkedIn's application ID. The client uses it to identify CVs it has already downloaded, so do not rename files in the output folder.
 - **Missing names.** If applicant names cannot be read, files are named `<applicationId>.pdf`.
@@ -339,7 +368,7 @@ From Python: `download_cvs(proxy="socks5://localhost:1080")`.
 | Computer must stay on | The tunnel exists only while the office computer is on and the `ssh` command is running. |
 | No fallback | If the tunnel is down, the run stops with `Stopped: could not reach LinkedIn through ...`. It never falls back to the server's own address. |
 | Be consistent | Use the proxy on every run, or on none. Alternating between the office address and the server address is itself a location mismatch. |
-| Scope | The proxy applies to CV downloads and `--login`. `--jd` does not use it; it involves no account. |
+| Scope | The proxy applies to CV downloads and `--login`. Job descriptions, whether from `--jd` or fetched during a CV run, do not use it; that request is public and involves no account. |
 | Supported proxies | `socks5://host:port` and `http://host:port`. Proxies that need a username and password are not supported over SOCKS. |
 
 ## How it works
@@ -357,6 +386,7 @@ Requests are issued from within the signed-in LinkedIn page, so the session neve
 | Message or symptom | Cause | Resolution |
 |---|---|---|
 | `Log in to LinkedIn in the Chrome window that just opened` | There is no stored session, or it has ended. | Sign in within 5 minutes, or run `linkedin-cvs --login`. |
+| `Stopped: not logged in to LinkedIn` | The saved session has ended and nobody signed in within 5 minutes. | Run `linkedin-cvs --login` and sign in. |
 | `Stopped: no open job posts visible` | The job posts page lists no open jobs. A LinkedIn prompt may be covering the page, or the account has none. | Run `linkedin-cvs --login` and inspect the page, or pass job IDs explicitly. |
 | `Stopped: HTTP ... (logged out, or LinkedIn challenged the request)` | LinkedIn declined a request. | Run `linkedin-cvs --login` and check the account for a verification or restriction notice. Wait before the next run. |
 | `Stopped: could not reach LinkedIn through ...` | The proxy or tunnel is not running, or the network is down. | Restart the tunnel, then run again. |

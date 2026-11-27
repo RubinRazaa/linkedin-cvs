@@ -13,14 +13,19 @@
     uv run linkedin_cvs.py --proxy socks5://localhost:1080   send Chrome through your own network
     uv run linkedin_cvs.py --login          open the window to log in or clear a prompt
     uv run linkedin_cvs.py --jd JOB_ID      job description and details; no login, no Chrome
+    uv run linkedin_cvs.py --index          also write applicants.csv in each job folder
+    uv run linkedin_cvs.py --json           print one JSON result on stdout, for calling from an app
 
 No cookies to copy. The first run opens a Chrome window: log in to LinkedIn
 there once. The login is kept in ~/.linkedin_cvs and reused on every later run.
-CVs land in cvs/<job_id>/; ones already there are skipped.
+CVs land in cvs/<job_id>/ next to job.json and job.txt (the job description);
+CVs already there are skipped.
 
 From Python:  from linkedin_cvs import download_cvs, job_details
 """
 import argparse
+import contextlib
+import csv
 import html
 import json
 import os
@@ -29,6 +34,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timedelta
 import urllib.error
@@ -40,7 +46,8 @@ PROFILE = Path.home() / ".linkedin_cvs" / "chrome-profile"
 VIEWER = "com.linkedin.sdui.flagshipnav.hiring.appeval.ResumeViewer"
 PAGE_SIZE = 30
 VIRTUAL_DISPLAY = ":99"  # used on Linux servers with no screen
-STAGES = ["IN_REVIEW", "HIRER_SHORTLISTED", "REJECTED"]  # every stage the dashboard shows
+# every stage the dashboard shows, and its name in applicants.csv
+STAGES = {"IN_REVIEW": "in review", "HIRER_SHORTLISTED": "shortlisted", "REJECTED": "rejected"}
 LOGGED_OUT = ("/login", "/uas/", "/checkpoint", "/authwall", "/signup")
 
 # Runs inside the logged-in LinkedIn page, so the session never leaves the browser.
@@ -159,15 +166,30 @@ def download_jds(job_ids, out="cvs", slow=False):
     for n, job_id in enumerate(job_ids):
         if n:
             pause()
-        job = job_details(job_id)
         folder = Path(out) / str(job_id)
-        folder.mkdir(parents=True, exist_ok=True)
-        (folder / "job.json").write_text(json.dumps(job, indent=2, ensure_ascii=False))
-        (folder / "job.txt").write_text(
-            f"{job['title']}\n{job['company']} | {job['location']}\n{job['url']}\n\n{job['description']}\n")
+        job = save_jd(job_id, folder)
         saved.append(folder / "job.json")
         print(f"job {job_id}: saved {job['title']}")
     return saved
+
+
+def save_jd(job_id, folder):
+    """Write job.json and job.txt into folder. Returns the job dict."""
+    job = job_details(job_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "job.json").write_text(json.dumps(job, indent=2, ensure_ascii=False))
+    (folder / "job.txt").write_text(
+        f"{job['title']}\n{job['company']} | {job['location']}\n{job['url']}\n\n{job['description']}\n")
+    return job
+
+
+def write_index(folder, people):
+    """applicants.csv: one row per applicant; 'file' is empty when no CV is saved."""
+    files = {f.stem.rsplit("_", 1)[-1]: f.name for f in folder.glob("*.pdf")}
+    with open(folder / "applicants.csv", "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["application_id", "name", "stage", "file"])
+        w.writerows([i, name, stage, files.get(i, "")] for i, (name, stage) in people.items())
 
 
 def ensure_display():
@@ -206,9 +228,13 @@ class Client:
         if logged_out(self.page.url):
             print("Log in to LinkedIn in the Chrome window that just opened "
                   "(one time only; waiting up to 5 minutes)...")
-            self.page.wait_for_url(lambda u: "linkedin.com" in u and not logged_out(u),
-                                   timeout=300_000)
-            self.page.goto(f"{BASE}/hiring/posted-jobs/")
+            try:
+                self.page.wait_for_url(lambda u: "linkedin.com" in u and not logged_out(u),
+                                       timeout=300_000)
+                self.page.goto(f"{BASE}/hiring/posted-jobs/")
+            except Error:  # nobody logged in (unattended run), or the window was closed
+                self.close()
+                raise Stopped("not logged in to LinkedIn: run with --login and log in once")
 
     def close(self):
         self.ctx.close()
@@ -229,16 +255,16 @@ class Client:
         return list(dict.fromkeys(re.findall(r"jobId=(\d{8,12})", text)))
 
     def applicants(self, job_id):
-        """{application_id: name} for everyone who applied, whatever their stage."""
+        """{application_id: (name, stage)} for everyone who applied, whatever their stage."""
         people = {}
-        for stage in STAGES:
+        for stage, label in STAGES.items():
             start = 0
             while True:
                 pause()
                 page = parse_applicants(self._fetch(
                     "/flagship-web/hiring/applicants-table/"
                     f"?workflow={stage}&jobId={job_id}&start={start}"))
-                people.update(page)
+                people.update({i: (name, label) for i, name in page})
                 if len(page) < PAGE_SIZE:
                     break
                 start += PAGE_SIZE
@@ -264,17 +290,23 @@ class Client:
         return data
 
 
-def download_cvs(job_ids=None, out="cvs", limit=None, slow=False, until=None, proxy=None):
+def download_cvs(job_ids=None, out="cvs", limit=None, slow=False, until=None, proxy=None,
+                 index=False, report=None):
     """Download new CVs. job_ids=None means every open job post. Returns saved paths.
 
     until="06:00" stops cleanly at that local time; the next run continues with the rest.
     proxy="socks5://localhost:1080" sends Chrome's traffic through that proxy.
+    index=True also writes applicants.csv (id, name, stage, file) in each job folder.
+    report={} is filled as the run goes (saved, no_resume, stopped), so it is still
+    there when the run raises Stopped.
     """
     from playwright.sync_api import sync_playwright
 
     set_slow(slow)
     end = deadline(until)
-    saved = []
+    report = {} if report is None else report
+    report.update(saved=[], no_resume=[], stopped=None)
+    saved = report["saved"]
     with sync_playwright() as pw:
         c = Client(pw, proxy)
         try:
@@ -286,25 +318,36 @@ def download_cvs(job_ids=None, out="cvs", limit=None, slow=False, until=None, pr
             for job_id in job_ids:
                 folder = Path(out) / job_id  # one folder per job, like the Drive layout
                 folder.mkdir(parents=True, exist_ok=True)
+                if not (folder / "job.json").exists():
+                    try:  # public page, no login; never worth stopping the CV run for
+                        save_jd(job_id, folder)
+                    except (Stopped, OSError) as e:
+                        print(f"job {job_id}: job description not saved ({e})")
                 have = {f.stem.rsplit("_", 1)[-1] for f in folder.glob("*.pdf")}
                 people = c.applicants(job_id)
-                todo = [(i, n) for i, n in people.items() if i not in have][:limit]
+                todo = [(i, name) for i, (name, _) in people.items() if i not in have][:limit]
                 print(f"job {job_id}: {len(people)} applicants, {len(todo)} to download")
-                for app_id, name in todo:
-                    if end and datetime.now() >= end:
-                        print(f"reached {until}: stopping, the next run continues")
-                        return saved
-                    pause()
-                    url = c.pdf_url(job_id, app_id)
-                    if not url:
-                        print(f"  no resume: {name or app_id}")
-                        continue
-                    path = folder / filename(app_id, name)
-                    path.write_bytes(c.pdf(url))
-                    saved.append(path)
-                    print(f"  saved {path.name}", flush=True)
-                    if slow and len(saved) % REST_EVERY == 0:
-                        time.sleep(random.uniform(*REST))
+                try:
+                    for app_id, name in todo:
+                        if end and datetime.now() >= end:
+                            report["stopped"] = f"reached {until}"
+                            print(f"reached {until}: stopping, the next run continues")
+                            return saved
+                        pause()
+                        url = c.pdf_url(job_id, app_id)
+                        if not url:
+                            report["no_resume"].append(app_id)
+                            print(f"  no resume: {name or app_id}")
+                            continue
+                        path = folder / filename(app_id, name)
+                        path.write_bytes(c.pdf(url))
+                        saved.append(path)
+                        print(f"  saved {path.name}", flush=True)
+                        if slow and len(saved) % REST_EVERY == 0:
+                            time.sleep(random.uniform(*REST))
+                finally:
+                    if index:
+                        write_index(folder, people)
         finally:
             c.close()
     return saved
@@ -345,6 +388,11 @@ def selftest():
     assert _pace == SLOW and SLOW[0] > QUICK[1]
     set_slow(False)
     assert _pace == QUICK
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "Ann_Lee_111.pdf").write_bytes(b"%PDF")
+        write_index(Path(d), {"111": ("Ann Lee", "in review"), "222": ("", "rejected")})
+        assert (Path(d) / "applicants.csv").read_text().splitlines() == [
+            "application_id,name,stage,file", "111,Ann Lee,in review,Ann_Lee_111.pdf", "222,,rejected,"]
     print("selftest ok")
 
 
@@ -359,24 +407,39 @@ def main():
                    help="stop cleanly at this local time; the next run continues")
     p.add_argument("--proxy", metavar="URL",
                    help="send Chrome through this proxy, e.g. socks5://localhost:1080")
+    p.add_argument("--index", action="store_true",
+                   help="also write applicants.csv (id, name, stage, file) in each job folder")
+    p.add_argument("--json", action="store_true",
+                   help="print one JSON result on stdout; progress goes to stderr")
     p.add_argument("--selftest", action="store_true")
     p.add_argument("--login", action="store_true", help="open the window to log in or clear a prompt")
     p.add_argument("--jd", action="store_true", help="save the job description and details; no login needed")
     a = p.parse_args()
     if a.selftest:
         return selftest()
-    try:
-        if a.login:
-            return login(a.proxy)
-        if a.jd:
-            if not a.job_ids:
-                sys.exit("--jd needs at least one job ID")
-            saved = download_jds(a.job_ids, a.out, a.slow)
+    if a.jd and not a.job_ids:
+        sys.exit("--jd needs at least one job ID")
+    report = {"saved": [], "no_resume": [], "stopped": None}
+    error = None
+    # With --json, stdout carries the result only.
+    with contextlib.redirect_stdout(sys.stderr if a.json else sys.stdout):
+        try:
+            if a.login:
+                return login(a.proxy)
+            if a.jd:
+                report["saved"] = download_jds(a.job_ids, a.out, a.slow)
+            else:
+                download_cvs(a.job_ids, a.out, a.limit, a.slow, a.until, a.proxy, a.index, report)
+        except Stopped as e:
+            error = str(e)
         else:
-            saved = download_cvs(a.job_ids, a.out, a.limit, a.slow, a.until, a.proxy)
-    except Stopped as e:
-        sys.exit(f"Stopped: {e}")
-    print(f"done: {len(saved)} {'job posts' if a.jd else 'CVs'} saved under {a.out}/")
+            print(f"done: {len(report['saved'])} {'job posts' if a.jd else 'CVs'} saved under {a.out}/")
+    if a.json:
+        print(json.dumps({"ok": error is None, "stopped": error or report["stopped"],
+                          "saved": [str(f) for f in report["saved"]],
+                          "no_resume": report["no_resume"]}))
+    if error:
+        sys.exit(f"Stopped: {error}")
 
 
 if __name__ == "__main__":
