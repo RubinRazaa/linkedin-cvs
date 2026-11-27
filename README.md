@@ -1,9 +1,17 @@
-# bowerbird
+<h1 align="center">
+  <img src="assets/logo.svg" alt="bowerbird" width="240">
+</h1>
 
-[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+<p align="center">
+  <b>Collects the CVs of applicants to your LinkedIn job posts and arranges them in one folder per job.</b>
+</p>
 
-A command-line tool and Python library that downloads the CVs of applicants to your LinkedIn job posts, and exports the description and details of any public job post.
+<p align="center">
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python 3.11+"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
+</p>
+
+bowerbird is a command-line tool and Python library that downloads the CVs of applicants to your LinkedIn job posts, and exports the description and details of any public job post. It is named after the bowerbird, which gathers objects and arranges them neatly.
 
 ```bash
 bowerbird                  # download every new CV from every open job post

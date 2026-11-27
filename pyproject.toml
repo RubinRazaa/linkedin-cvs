@@ -1,7 +1,7 @@
 [project]
 name = "bowerbird"
 version = "0.1.0"
-description = "Download the CVs of applicants to your LinkedIn job posts."
+description = "Collects the CVs of applicants to your LinkedIn job posts, one folder per job."
 readme = "README.md"
 license = "MIT"
 authors = [{name = "RubinRazaa"}]
