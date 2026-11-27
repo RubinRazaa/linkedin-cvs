@@ -37,6 +37,7 @@ It works with the standard LinkedIn hiring dashboard (`linkedin.com/hiring`). Li
 - [Pacing and scheduled runs](#pacing-and-scheduled-runs)
 - [Output](#output)
 - [Running on a Linux server](#running-on-a-linux-server)
+- [Using your own network from a server](#using-your-own-network-from-a-server)
 - [How it works](#how-it-works)
 - [Troubleshooting](#troubleshooting)
 - [Risks and limitations](#risks-and-limitations)
@@ -109,6 +110,7 @@ linkedin-cvs [JOB_ID ...] [options]
 | `--limit N` | Download at most `N` new CVs per job. |
 | `--slow` | Use the slow pace. See [Pacing and scheduled runs](#pacing-and-scheduled-runs). |
 | `--until HH:MM` | Stop cleanly at this local time. The next run continues with the remainder. |
+| `--proxy URL` | Send Chrome's traffic through a proxy, for example `socks5://localhost:1080`. See [Using your own network from a server](#using-your-own-network-from-a-server). |
 | `--jd` | Export job descriptions for the given job IDs instead of CVs. No login required. |
 | `--login` | Open the Chrome window to sign in or dismiss a LinkedIn prompt. |
 | `--selftest` | Check the parsing logic. Does not contact LinkedIn. |
@@ -143,7 +145,7 @@ for path in files:
     ...  # for example, upload `path` to the storage folder for `job_id`
 ```
 
-### `download_cvs(job_ids=None, out="cvs", limit=None, slow=False, until=None)`
+### `download_cvs(job_ids=None, out="cvs", limit=None, slow=False, until=None, proxy=None)`
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -152,6 +154,7 @@ for path in files:
 | `limit` | `int` or `None` | `None` | Maximum number of new CVs per job. `None` means no maximum. |
 | `slow` | `bool` | `False` | Use the slow pace. |
 | `until` | `str` (`"HH:MM"`) or `None` | `None` | Stop cleanly at this local time and return the files saved so far. |
+| `proxy` | `str` or `None` | `None` | Proxy URL for Chrome, for example `"socks5://localhost:1080"`. |
 
 **Returns** a list of `pathlib.Path`, one for each CV saved during this call. CVs that already existed are skipped and are not included, so the list contains exactly the new files.
 
@@ -303,6 +306,38 @@ Connect a VNC viewer to `localhost:5900` (on macOS: Finder, **Go > Connect to Se
 
 **3. Run.** Every later run uses the same commands as on a desktop, whether started from a shell, from cron or from your own code.
 
+## Using your own network from a server
+
+This is optional. By default the client connects directly.
+
+LinkedIn treats a sign-in from a data-centre address as unfamiliar. If the client must run on a server, `--proxy` lets Chrome reach LinkedIn through a network the account already uses, such as your office connection, so LinkedIn sees that address instead of the server's.
+
+Use only a network you own or control. Rented proxy services are not a substitute: their addresses are shared and frequently flagged.
+
+**1. Open a tunnel from an office computer to the server.** The office computer starts the connection, so no inbound access to the office is required. On a computer in the office that stays switched on:
+
+```bash
+ssh -N -R 1080 youruser@yourserver
+```
+
+This opens a SOCKS proxy on the server at `localhost:1080` that exits through the office connection. It requires OpenSSH 7.6 or newer on both sides, and it lasts for as long as the command runs.
+
+**2. Use it for every command that opens Chrome**, including the sign-in:
+
+```bash
+linkedin-cvs --login --proxy socks5://localhost:1080
+linkedin-cvs --slow --until 06:00 --proxy socks5://localhost:1080
+```
+
+From Python: `download_cvs(proxy="socks5://localhost:1080")`.
+
+| Behaviour | Detail |
+|---|---|
+| No fallback | If the tunnel is down, the run stops with `Stopped: could not reach LinkedIn through ...`. It never falls back to the server's own address. |
+| Be consistent | Use the proxy on every run, or on none. Alternating between the office address and the server address is itself a location mismatch. |
+| Scope | The proxy applies to CV downloads and `--login`. `--jd` does not use it; it involves no account. |
+| Supported proxies | `socks5://host:port` and `http://host:port`. Proxies that need a username and password are not supported over SOCKS. |
+
 ## How it works
 
 1. Chrome opens with the stored session and loads **Manage job posts**.
@@ -320,6 +355,7 @@ Requests are issued from within the signed-in LinkedIn page, so the session neve
 | `Log in to LinkedIn in the Chrome window that just opened` | There is no stored session, or it has ended. | Sign in within 5 minutes, or run `linkedin-cvs --login`. |
 | `Stopped: no open job posts visible` | The job posts page lists no open jobs. A LinkedIn prompt may be covering the page, or the account has none. | Run `linkedin-cvs --login` and inspect the page, or pass job IDs explicitly. |
 | `Stopped: HTTP ... (logged out, or LinkedIn challenged the request)` | LinkedIn declined a request. | Run `linkedin-cvs --login` and check the account for a verification or restriction notice. Wait before the next run. |
+| `Stopped: could not reach LinkedIn through ...` | The proxy or tunnel is not running, or the network is down. | Restart the tunnel, then run again. |
 | `Stopped: resume link returned HTTP ..., not a PDF` | The download link did not return a resume. | As above. |
 | `Stopped: job ...: HTTP 429` (with `--jd`) | Too many public requests in a short period. | Wait a minute, then run again. |
 | `job ...: 0 applicants` for a job that has applicants | The signed-in account cannot view that job's applicants. | Sign in with the account that owns the job. |

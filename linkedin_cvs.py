@@ -10,6 +10,7 @@
     uv run linkedin_cvs.py --limit 3        at most 3 new CVs per job
     uv run linkedin_cvs.py --slow           long pauses, for unattended overnight runs
     uv run linkedin_cvs.py --slow --until 06:00   nightly run: stop at 06:00, continue next night
+    uv run linkedin_cvs.py --proxy socks5://localhost:1080   send Chrome through your own network
     uv run linkedin_cvs.py --login          open the window to log in or clear a prompt
     uv run linkedin_cvs.py --jd JOB_ID      job description and details; no login, no Chrome
 
@@ -184,14 +185,24 @@ def ensure_display():
 
 
 class Client:
-    def __init__(self, playwright):
+    def __init__(self, playwright, proxy=None):
+        from playwright.sync_api import Error
+
         self.xvfb = ensure_display()
         PROFILE.mkdir(parents=True, exist_ok=True)
         # ponytail: visible Chrome window each run; go headless only if that proves safe.
         self.ctx = playwright.chromium.launch_persistent_context(
-            str(PROFILE), channel="chrome", headless=False, chromium_sandbox=True)
+            str(PROFILE), channel="chrome", headless=False, chromium_sandbox=True,
+            proxy={"server": proxy} if proxy else None)
         self.page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
-        self.page.goto(f"{BASE}/hiring/posted-jobs/")
+        try:
+            self.page.goto(f"{BASE}/hiring/posted-jobs/")
+        except Error as e:
+            # With a proxy set Chrome never falls back to a direct connection.
+            self.close()
+            raise Stopped("could not reach LinkedIn"
+                          + (f" through {proxy} (is the tunnel up?)" if proxy else "")
+                          + f": {str(e).splitlines()[0]}")
         if logged_out(self.page.url):
             print("Log in to LinkedIn in the Chrome window that just opened "
                   "(one time only; waiting up to 5 minutes)...")
@@ -253,10 +264,11 @@ class Client:
         return data
 
 
-def download_cvs(job_ids=None, out="cvs", limit=None, slow=False, until=None):
+def download_cvs(job_ids=None, out="cvs", limit=None, slow=False, until=None, proxy=None):
     """Download new CVs. job_ids=None means every open job post. Returns saved paths.
 
     until="06:00" stops cleanly at that local time; the next run continues with the rest.
+    proxy="socks5://localhost:1080" sends Chrome's traffic through that proxy.
     """
     from playwright.sync_api import sync_playwright
 
@@ -264,7 +276,7 @@ def download_cvs(job_ids=None, out="cvs", limit=None, slow=False, until=None):
     end = deadline(until)
     saved = []
     with sync_playwright() as pw:
-        c = Client(pw)
+        c = Client(pw, proxy)
         try:
             job_ids = list(job_ids or c.open_jobs())
             if not job_ids:
@@ -298,12 +310,12 @@ def download_cvs(job_ids=None, out="cvs", limit=None, slow=False, until=None):
     return saved
 
 
-def login():
+def login(proxy=None):
     """Open the window and leave it open until you close it (log in, clear prompts)."""
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as pw:
-        c = Client(pw)
+        c = Client(pw, proxy)
         print("Window open. Close it when LinkedIn shows your job posts.")
         c.page.wait_for_event("close", timeout=0)
 
@@ -345,21 +357,23 @@ def main():
                    help="15-40 s between requests and a few minutes' rest every 20 CVs")
     p.add_argument("--until", metavar="HH:MM", type=lambda v: deadline(v) and v,
                    help="stop cleanly at this local time; the next run continues")
+    p.add_argument("--proxy", metavar="URL",
+                   help="send Chrome through this proxy, e.g. socks5://localhost:1080")
     p.add_argument("--selftest", action="store_true")
     p.add_argument("--login", action="store_true", help="open the window to log in or clear a prompt")
     p.add_argument("--jd", action="store_true", help="save the job description and details; no login needed")
     a = p.parse_args()
     if a.selftest:
         return selftest()
-    if a.login:
-        return login()
     try:
+        if a.login:
+            return login(a.proxy)
         if a.jd:
             if not a.job_ids:
                 sys.exit("--jd needs at least one job ID")
             saved = download_jds(a.job_ids, a.out, a.slow)
         else:
-            saved = download_cvs(a.job_ids, a.out, a.limit, a.slow, a.until)
+            saved = download_cvs(a.job_ids, a.out, a.limit, a.slow, a.until, a.proxy)
     except Stopped as e:
         sys.exit(f"Stopped: {e}")
     print(f"done: {len(saved)} {'job posts' if a.jd else 'CVs'} saved under {a.out}/")
