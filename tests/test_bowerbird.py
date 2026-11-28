@@ -6,7 +6,8 @@ import pytest
 
 from bowerbird import core, cvs, jobs
 from bowerbird.core import BASE, QUICK, SLOW, Stopped, deadline, job_id, set_slow
-from bowerbird.cvs import filename, logged_out, parse_applicants, parse_pdf_url, write_index
+from bowerbird.cvs import (filename, logged_out, parse_applicants, parse_contact, parse_details,
+                           parse_pdf_url, parse_screening, write_index)
 from bowerbird.jobs import parse_job
 
 SAMPLE = ('x APPLICANTS_TABLE_ROW_STATE_111 y APPLICANTS_TABLE_ROW_STATE_222 '
@@ -60,11 +61,25 @@ def test_pace():
 
 def test_write_index(tmp_path):
     (tmp_path / "Ann_Lee_111.pdf").write_bytes(b"%PDF")
-    write_index(tmp_path, {"111": ("Ann Lee", "in review"), "222": ("", "rejected")})
+    write_index(tmp_path, {"111": {"name": "Ann Lee", "stage": "in review", "applied": "2026-01-02"},
+                           "222": {"name": "", "stage": "rejected"}})
     assert (tmp_path / "applicants.csv").read_text().splitlines() == [
-        "application_id,name,stage,file", "111,Ann Lee,in review,Ann_Lee_111.pdf", "222,,rejected,"]
-    assert json.loads((tmp_path / "applicants.json").read_text())[0] == {
-        "application_id": "111", "name": "Ann Lee", "stage": "in review", "file": "Ann_Lee_111.pdf"}
+        "application_id,name,stage,applied,location,current_title,current_company,must_have,preferred,"
+        "fit,email,phone,screening,file",
+        "111,Ann Lee,in review,2026-01-02,,,,,,,,,,Ann_Lee_111.pdf", "222,,rejected,,,,,,,,,,,"]
+    first = json.loads((tmp_path / "applicants.json").read_text())[0]
+    assert first["applied"] == "2026-01-02" and first["file"] == "Ann_Lee_111.pdf"
+
+
+def test_parse_details():
+    kid = 'x "children":["%s"] y '
+    row = ('["Applied on: 01/02/2026"] name ["Applied on: 01/02/2026"] ROW_VIEWED_STATE_111 '
+           + "".join(kid % k for k in ["Buyer", "Acme", "Pune, India", "3/3", "Must-have", "4/5", "Preferred", "Top fit"]))
+    assert parse_details(row + '["Applied on: soon"] n ["Applied on: soon"] ROW_VIEWED_STATE_222') == {
+        "111": {"applied": "2026-01-02", "location": "Pune, India", "current_title": "Buyer",
+                "current_company": "Acme", "must_have": "3/3", "preferred": "4/5", "fit": "Top fit"},
+        "222": {"applied": "soon"}}
+    assert parse_details("nothing") == {}
 
 
 def test_job_id():
@@ -89,6 +104,8 @@ def test_job_folder(tmp_path, monkeypatch):
 
 
 class FakeClient:
+    lookups = 0
+
     def __init__(self, *a):
         pass
 
@@ -99,10 +116,15 @@ class FakeClient:
         return ["1234567890"]
 
     def applicants(self, job_id):
-        return {"111": ("Ann Lee", "in review"), "222": ("Bo", "rejected")}
+        return {"111": {"name": "Ann Lee", "stage": "in review"}, "222": {"name": "Bo", "stage": "rejected"}}
 
     def pdf_url(self, job_id, app_id):
         return "u" if app_id == "111" else None
+
+    def details(self, job_id, app_id):
+        FakeClient.lookups += 1
+        return {"email": "a@b.co", "phone": "", "screening": [
+            {"question": "Based in Pune?", "ideal": "Yes", "answer": "Yes"}]}
 
     def pdf(self, url):
         return b"%PDF"
@@ -123,5 +145,24 @@ def test_download_include(tmp_path, monkeypatch):
     assert sorted(f.name for f in folder.iterdir()) == [
         "Ann_Lee_111.pdf", "applicants.csv", "applicants.json", "job.json", "job.txt"]
     assert report["saved"] == []  # the CV was already there
+    cvs.download(out=tmp_path, include=["details"], limit=1)
+    cvs.download(out=tmp_path, include=["details"])
+    cvs.download(out=tmp_path, include=["details"])   # everyone known: no more lookups
+    cvs.download(out=tmp_path)                        # a plain run keeps the details
+    assert FakeClient.lookups == 2
+    rows = json.loads((folder / "applicants.json").read_text())
+    assert [r["email"] for r in rows] == ["a@b.co", "a@b.co"]
+    assert "Based in Pune? Yes" in (folder / "applicants.csv").read_text()
     with pytest.raises(Stopped):
         cvs.download(include=["emails"])
+
+
+def test_parse_detail_sections():
+    kid = 'x "children":["%s"] y '
+    assert parse_contact(kid % "+971 5" + kid % "Copy phone number" + '"mailto:a%2Bb@c.co?x"') == {
+        "email": "a+b@c.co", "phone": "+971 5"}
+    assert parse_contact("nothing") == {"email": "", "phone": ""}
+    assert parse_screening("".join(kid % k for k in ["Based in Pune?", "Ideal answer: Yes", "No"])) == [
+        {"question": "Based in Pune?", "ideal": "Yes", "answer": "No"}]
+    late = kid % "Q2?" + '"children":"$L2c" "$L2d"\n2c:["Ideal answer: No"]\n2d:["$","p",{"children":["No"]}]'
+    assert parse_screening(late) == [{"question": "Q2?", "ideal": "No", "answer": "No"}]

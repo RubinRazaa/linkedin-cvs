@@ -8,6 +8,7 @@
     bowerbird --proxy socks5://localhost:1080   send Chrome through your own network
     bowerbird --login          open the window to log in or clear a prompt
     bowerbird --include cv     only the CVs (default: cv,job,applicants)
+    bowerbird --include cv,job,applicants,details   also email, phone, screening answers
     bowerbird --include job JOB_ID   job description only; no login, no Chrome
     bowerbird --json           print one JSON result on stdout, for calling from an app
 
@@ -24,7 +25,7 @@ import json
 import sys
 
 from .core import Stopped, deadline
-from .cvs import PARTS, download, login
+from .cvs import DEFAULT, PARTS, download, login
 
 
 def main():
@@ -38,9 +39,10 @@ def main():
                    help="stop cleanly at this local time; the next run continues")
     p.add_argument("--proxy", metavar="URL",
                    help="send Chrome through this proxy, e.g. socks5://localhost:1080")
-    p.add_argument("--include", metavar="PARTS", default=",".join(PARTS),
+    p.add_argument("--include", metavar="PARTS", default=",".join(DEFAULT),
                    type=lambda v: [x.strip() for x in v.split(",") if x.strip()],
-                   help=f"what to collect, comma-separated (default: {','.join(PARTS)})")
+                   help=f"what to collect, comma-separated, from {', '.join(PARTS)} "
+                        f"(default: {','.join(DEFAULT)})")
     p.add_argument("--json", action="store_true",
                    help="print one JSON result on stdout; progress goes to stderr")
     p.add_argument("--login", action="store_true", help="open the window to log in or clear a prompt")

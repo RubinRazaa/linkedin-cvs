@@ -11,6 +11,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import unquote
 
 from .core import BASE, REST, REST_EVERY, Stopped, deadline, pause, set_slow, slug
 from .core import job_id as to_id
@@ -22,7 +23,11 @@ PAGE_SIZE = 30
 VIRTUAL_DISPLAY = ":99"  # used on Linux servers with no screen
 # every stage the dashboard shows, and its name in applicants.csv
 STAGES = {"IN_REVIEW": "in review", "HIRER_SHORTLISTED": "shortlisted", "REJECTED": "rejected"}
-PARTS = ("cv", "job", "applicants")  # what a run can collect
+PARTS = ("cv", "job", "applicants", "details")  # what a run can collect
+DEFAULT = PARTS[:3]  # details cost two more requests per applicant, so they are opt-in
+DETAIL = "com.linkedin.sdui.generated.jobposting.dsl.impl.applicantDetail"
+DETAIL_SCREEN = "com.linkedin.sdui.flagshipnav.hiring.appeval.ApplicantDetail"
+KID = r'children":\["([^"\\]{1,300})"\]'  # one piece of text shown on the page
 LOGGED_OUT = ("/login", "/uas/", "/checkpoint", "/authwall", "/signup")
 
 # Runs inside the logged-in LinkedIn page, so the session never leaves the browser.
@@ -47,6 +52,60 @@ def parse_applicants(text):
     return list(zip(ids, names))
 
 
+def parse_details(text):
+    """{application_id: {applied, location, must_have, ...}} from the same response.
+
+    Anything LinkedIn does not show, or shows in a new layout, is simply left out.
+    """
+    out = {}
+    parts = re.split(r'\["Applied on: ([^"\\]+)"\]', text)
+    for applied, row in zip(parts[1::2], parts[2::2]):
+        app = re.search(r"ROW_VIEWED_STATE_(\d+)", row)
+        if not app:  # the date is rendered twice; only the second is followed by the row
+            continue
+        kids = re.findall(r'children":\["([^"\\]{1,80})"\]', row[app.end():])[:10]
+        d = {"applied": applied}
+        try:
+            d["applied"] = datetime.strptime(applied, "%m/%d/%Y").date().isoformat()
+        except ValueError:
+            pass  # another locale: keep LinkedIn's own text
+        if "Must-have" in kids[1:]:
+            at = kids.index("Must-have")
+            d["must_have"] = kids[at - 1]
+            before = kids[:at - 1]  # [current title, current company,] location
+            if before:
+                d["location"] = before[-1]
+            if len(before) == 3:
+                d["current_title"], d["current_company"] = before[:2]
+        if "Preferred" in kids[1:]:
+            at = kids.index("Preferred")
+            d["preferred"] = kids[at - 1]
+            if kids[at + 1:at + 2] and kids[at + 1].endswith(" fit"):
+                d["fit"] = kids[at + 1]
+        out[app.group(1)] = d
+    return out
+
+
+def parse_contact(text):
+    """{email, phone} from the contact section of an applicant's detail."""
+    kids = re.findall(KID, text)
+    email = re.search(r'mailto:([^"\\?&]+)', text)
+    return {"email": unquote(email.group(1)) if email else "",
+            "phone": next((a for a, b in zip(kids, kids[1:]) if b == "Copy phone number"), "")}
+
+
+def parse_screening(text):
+    """[{question, ideal, answer}] from the screening section of an applicant's detail."""
+    # LinkedIn streams some answers as separate numbered lines; put them back in place
+    late = dict(re.findall(r"(?m)^([0-9a-f]+):(\[.*\])$", text))
+    for _ in range(3):
+        text = re.sub(r'"\$L([0-9a-f]+)"', lambda m: late.get(m.group(1), m.group(0)), text)
+    kids = re.findall(KID, text)
+    return list({q: {"question": q, "ideal": ideal.split(": ", 1)[1], "answer": answer}
+                 for q, ideal, answer in zip(kids, kids[1:], kids[2:])
+                 if ideal.startswith("Ideal answer: ")}.values())
+
+
 def parse_pdf_url(text):
     m = re.search(r'https:[^"\s\\]*/dms/prv/document/media/[^"\s\\]*', text)
     return m.group(0) if m else None
@@ -61,15 +120,21 @@ def logged_out(url):
     return any(part in url for part in LOGGED_OUT)
 
 
+COLUMNS = ["application_id", "name", "stage", "applied", "location", "current_title",
+           "current_company", "must_have", "preferred", "fit", "email", "phone", "screening",
+           "file"]
+
+
 def write_index(folder, people):
     """applicants.csv and applicants.json: one entry per applicant; 'file' is empty when no CV is saved."""
     files = {f.stem.rsplit("_", 1)[-1]: f.name for f in folder.glob("*.pdf")}
-    rows = [{"application_id": i, "name": name, "stage": stage, "file": files.get(i, "")}
-            for i, (name, stage) in people.items()]
+    rows = [{**dict.fromkeys(COLUMNS, ""), **p, "application_id": i, "file": files.get(i, "")}
+            for i, p in people.items()]
     with open(folder / "applicants.csv", "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, ["application_id", "name", "stage", "file"])
-        w.writeheader()
-        w.writerows(rows)
+        w = csv.DictWriter(f, COLUMNS)
+        w.writeheader()  # the CSV holds the screening answers as one readable cell
+        w.writerows({**r, "screening": " | ".join(f"{a['question']} {a['answer']}"
+                                                   for a in r["screening"] or [])} for r in rows)
     (folder / "applicants.json").write_text(json.dumps(rows, indent=2, ensure_ascii=False))
 
 
@@ -144,16 +209,17 @@ class Client:
         return list(dict.fromkeys(re.findall(r"jobId=(\d{8,12})", text)))
 
     def applicants(self, job_id):
-        """{application_id: (name, stage)} for everyone who applied, whatever their stage."""
+        """{application_id: {name, stage, applied, ...}} for everyone who applied, whatever their stage."""
         people = {}
         for stage, label in STAGES.items():
             start = 0
             while True:
                 pause()
-                page = parse_applicants(self._fetch(
-                    "/flagship-web/hiring/applicants-table/"
-                    f"?workflow={stage}&jobId={job_id}&start={start}"))
-                people.update({i: (name, label) for i, name in page})
+                text = self._fetch("/flagship-web/hiring/applicants-table/"
+                                   f"?workflow={stage}&jobId={job_id}&start={start}")
+                page, details = parse_applicants(text), parse_details(text)
+                people.update({i: {"name": name, "stage": label, **details.get(i, {})}
+                               for i, name in page})
                 if len(page) < PAGE_SIZE:
                     break
                 start += PAGE_SIZE
@@ -171,6 +237,20 @@ class Client:
             f"/flagship-web/rsc-action/actions/navigation?screenId={VIEWER}&sduiid={VIEWER}",
             json.dumps(body)))
 
+    def details(self, job_id, app_id):
+        """{email, phone, screening} of one applicant: two requests."""
+        def section(name):
+            pause()
+            body = {"componentId": DETAIL + name, "clientArguments": {
+                "payload": {"jobPostingId": job_id, "applicationId": app_id}, "states": [],
+                "requestMetadata": {"$type": "proto.sdui.common.RequestMetadata"},
+                "screenId": DETAIL_SCREEN, "knownTemplateIds": []}}
+            return self._fetch("/flagship-web/rsc-action/actions/component"
+                               f"?componentId={DETAIL + name}&sduiid={DETAIL + name}",
+                               json.dumps(body))
+        return {**parse_contact(section("CtaSection")),
+                "screening": parse_screening(section("ProfileAndScreeningSection"))}
+
     def pdf(self, url):
         r = self.ctx.request.get(url)  # shares the window's login
         data = r.body() if r.status == 200 else b""
@@ -179,7 +259,7 @@ class Client:
         return data
 
 
-def download(job_ids=None, out="cvs", include=PARTS, limit=None, slow=False, until=None,
+def download(job_ids=None, out="cvs", include=DEFAULT, limit=None, slow=False, until=None,
              proxy=None, report=None):
     """Collect the chosen parts for each job post. Returns the saved CV paths.
 
@@ -187,7 +267,11 @@ def download(job_ids=None, out="cvs", include=PARTS, limit=None, slow=False, unt
     include picks what to collect, any of:
       "cv"          each applicant's CV as a PDF (CVs already on disk are skipped)
       "job"         job.json and job.txt, and the job title in the folder name
-      "applicants"  applicants.csv and applicants.json (id, name, stage, file)
+      "applicants"  applicants.csv and applicants.json (id, name, stage, date applied,
+                    location, qualification scores, fit, file)
+      "details"     adds email, phone and screening answers to those two files. Not in
+                    the default: two more requests per applicant, made once and kept
+    limit caps the new CVs, and the new detail lookups, per job.
     until="06:00" stops cleanly at that local time; the next run continues with the rest.
     proxy="socks5://localhost:1080" sends Chrome's traffic through that proxy.
     report={} is filled as the run goes (saved, no_resume, stopped), so it is still
@@ -227,15 +311,39 @@ def download(job_ids=None, out="cvs", include=PARTS, limit=None, slow=False, unt
                     continue
                 have = {f.stem.rsplit("_", 1)[-1] for f in folder.glob("*.pdf")}
                 people = c.applicants(job_id)
-                todo = [(i, name) for i, (name, _) in people.items() if i not in have][:limit]
+                try:  # details from an earlier run are kept and never asked for twice
+                    known = {r["application_id"]: r for r in
+                             json.loads((folder / "applicants.json").read_text())}
+                except (OSError, ValueError, KeyError, TypeError):
+                    known = {}
+                for i, p in people.items():
+                    if isinstance(known.get(i, {}).get("screening"), list):
+                        p.update({k: known[i].get(k, "") for k in ("email", "phone", "screening")})
+                lookups = [i for i, p in people.items() if "screening" not in p][:limit]
+                if "details" not in include:
+                    lookups = []
+                todo = [(i, p["name"]) for i, p in people.items() if i not in have][:limit]
                 if "cv" not in include:
                     todo = []
-                print(f"job {job_id}: {len(people)} applicants, {len(todo)} to download")
+                print(f"job {job_id}: {len(people)} applicants, {len(todo)} to download"
+                      + (f", {len(lookups)} detail lookups" if lookups else ""))
+
+                def out_of_time():
+                    if end and datetime.now() >= end:
+                        report["stopped"] = f"reached {until}"
+                        print(f"reached {until}: stopping, the next run continues")
+                        return True
+
                 try:
+                    for n, app_id in enumerate(lookups, 1):
+                        if out_of_time():
+                            return saved
+                        people[app_id].update(c.details(job_id, app_id))
+                        print(f"  details {n}/{len(lookups)}", flush=True)
+                        if slow and n % REST_EVERY == 0:
+                            time.sleep(random.uniform(*REST))
                     for app_id, name in todo:
-                        if end and datetime.now() >= end:
-                            report["stopped"] = f"reached {until}"
-                            print(f"reached {until}: stopping, the next run continues")
+                        if out_of_time():
                             return saved
                         pause()
                         url = c.pdf_url(job_id, app_id)
@@ -250,7 +358,7 @@ def download(job_ids=None, out="cvs", include=PARTS, limit=None, slow=False, unt
                         if slow and len(saved) % REST_EVERY == 0:
                             time.sleep(random.uniform(*REST))
                 finally:
-                    if "applicants" in include:
+                    if include & {"applicants", "details"}:
                         write_index(folder, people)
         finally:
             c.close()

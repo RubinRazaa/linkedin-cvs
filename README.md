@@ -11,7 +11,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
 </p>
 
-bowerbird is a command-line tool and Python library that collects everything about your LinkedIn job posts into one folder per job: each applicant's CV, the job description, and the list of applicants with their stage. You choose which of these a run collects. It is named after the bowerbird, which gathers objects and arranges them neatly.
+bowerbird is a command-line tool and Python library that collects everything about your LinkedIn job posts into one folder per job: each applicant's CV, the job description, and the list of applicants with their stage, application date and qualification scores. On request it adds each applicant's email, phone and screening answers. You choose which of these a run collects. It is named after the bowerbird, which gathers objects and arranges them neatly.
 
 ```bash
 bowerbird                  # every open job post: new CVs, job description, applicant list
@@ -27,7 +27,7 @@ It works with the standard LinkedIn hiring dashboard (`linkedin.com/hiring`). Li
 ## Features
 
 - **One command for every applicant.** Finds your open job posts and downloads each applicant's CV as a PDF, across the In Review, Shortlist and Rejected stages.
-- **You choose what to collect.** One `--include` list selects CVs, job descriptions and applicant lists; the Python function takes the same list.
+- **You choose what to collect.** One `--include` list selects CVs, job descriptions, applicant lists and contact details; the Python function takes the same list.
 - **Folders you can read.** Each job gets a folder named after its title, with an applicant list as CSV and JSON.
 - **Incremental.** CVs already on disk are skipped, so each run downloads only new applicants.
 - **No cookie handling.** You sign in once in a dedicated Chrome window. The session is stored locally and reused.
@@ -118,11 +118,11 @@ bowerbird [JOB_ID ...] [options]
 |---|---|
 | `JOB_ID ...` | Job posts to process, as job IDs or job links. Default: every job on the **Open** tab. |
 | `--out DIR` | Output folder. Default: `./cvs`. |
-| `--limit N` | Download at most `N` new CVs per job. |
+| `--limit N` | Download at most `N` new CVs per job (and, with `details`, look up at most `N` new applicants). |
 | `--slow` | Use the slow pace. See [Pacing and scheduled runs](#pacing-and-scheduled-runs). |
 | `--until HH:MM` | Stop cleanly at this local time. The next run continues with the remainder. |
 | `--proxy URL` | Send Chrome's traffic through a proxy, for example `socks5://localhost:1080`. See [Using your own network from a server](#using-your-own-network-from-a-server). |
-| `--include PARTS` | What to collect, comma-separated. Default: `cv,job,applicants` (everything). See [Choosing what to collect](#choosing-what-to-collect). |
+| `--include PARTS` | What to collect, comma-separated. Default: `cv,job,applicants`. See [Choosing what to collect](#choosing-what-to-collect). |
 | `--json` | Print one JSON result on standard output. See [JSON result](#json-result). |
 | `--login` | Open the Chrome window to sign in or dismiss a LinkedIn prompt. |
 
@@ -142,18 +142,20 @@ bowerbird --include job 1234567890 # job description only
 
 ### Choosing what to collect
 
-A run collects everything by default. Pass `--include` with a comma-separated list to collect less.
+A run collects `cv`, `job` and `applicants` by default. Pass `--include` with a comma-separated list to collect less.
 
 | Part | What it saves in each job folder |
 |---|---|
 | `cv` | Each applicant's CV as a PDF. CVs already on disk are skipped. |
 | `job` | `job.json` and `job.txt`, and the job title in the folder name. Without this part a new folder is named by job ID only. |
-| `applicants` | `applicants.csv` and `applicants.json`: every applicant with their stage and CV file name. |
+| `applicants` | `applicants.csv` and `applicants.json`: every applicant with their stage, application date, location, current role, qualification scores, fit rating and CV file name. Costs no extra requests. |
+| `details` | Adds each applicant's email, phone and screening answers to those two files. **Not in the default**, because it costs two more requests per applicant. Each applicant is looked up once; later runs reuse the saved values. |
 
 ```bash
 bowerbird --include cv                # CVs only
 bowerbird --include cv,job            # CVs and job description
 bowerbird --include applicants        # refresh the applicant lists; downloads no CVs
+bowerbird --include cv,job,applicants,details   # everything, with email, phone and screening answers
 bowerbird --include job 1234567890    # job description only: no login, no Chrome
 ```
 
@@ -203,8 +205,8 @@ for path in files:
 |---|---|---|---|
 | `job_ids` | `list[str]` or `None` | `None` | Job posts to process, as job IDs or job links. `None` selects every job on the **Open** tab. |
 | `out` | `str` or `Path` | `"cvs"` | Output folder. One subfolder is created per job. |
-| `include` | list of `str` | all three | What to collect: any of `"cv"`, `"job"`, `"applicants"`. See [Choosing what to collect](#choosing-what-to-collect). |
-| `limit` | `int` or `None` | `None` | Maximum number of new CVs per job. `None` means no maximum. |
+| `include` | list of `str` | `cv`, `job`, `applicants` | What to collect: any of `"cv"`, `"job"`, `"applicants"`, `"details"`. See [Choosing what to collect](#choosing-what-to-collect). |
+| `limit` | `int` or `None` | `None` | Maximum number of new CVs, and of new detail lookups, per job. `None` means no maximum. |
 | `slow` | `bool` | `False` | Use the slow pace. |
 | `until` | `str` (`"HH:MM"`) or `None` | `None` | Stop cleanly at this local time and return the files saved so far. |
 | `proxy` | `str` or `None` | `None` | Proxy URL for Chrome, for example `"socks5://localhost:1080"`. |
@@ -214,7 +216,7 @@ for path in files:
 
 **Raises** `Stopped` when the run cannot continue or `include` names an unknown part: the session has ended, LinkedIn returned an unexpected response, or no open job posts are visible. The client does not retry. Files saved before the exception remain on disk, and the next call continues from that point.
 
-The call blocks until the run is complete. Allow about 7 seconds per CV at the quick pace and about 35 seconds at the slow pace. In a web application, run it as a background task, and run only one download at a time.
+The call blocks until the run is complete. Allow about 7 seconds per CV at the quick pace and about 35 seconds at the slow pace; with `details`, allow about twice that again for each applicant not looked up before. In a web application, run it as a background task, and run only one download at a time.
 
 ## Job descriptions
 
@@ -328,13 +330,27 @@ cvs/
     └── applicants.json              the same list, for code
 ```
 
-- **Applicant list.** Each job folder gets `applicants.csv` and `applicants.json` with the fields `application_id`, `name`, `stage` (`in review`, `shortlisted` or `rejected`) and `file`. It lists every applicant, and `file` is empty for anyone whose CV is not on disk. Both files are rewritten on each run.
+- **Applicant list.** Each job folder gets `applicants.csv` and `applicants.json`, with one entry per applicant. Both files are rewritten on each run. A field is empty when LinkedIn does not show it.
+
+  | Field | Content |
+  |---|---|
+  | `application_id` | LinkedIn's ID of the application. |
+  | `name` | The applicant's name. |
+  | `stage` | `in review`, `shortlisted` or `rejected`. |
+  | `applied` | Date of the application, as `YYYY-MM-DD`. |
+  | `location` | The applicant's location. |
+  | `current_title`, `current_company` | The applicant's current role, when LinkedIn shows one. |
+  | `must_have`, `preferred` | Qualification scores, for example `3/3`. |
+  | `fit` | LinkedIn's rating, for example `Top fit`. |
+  | `email`, `phone` | Contact details. Only with `details`. |
+  | `screening` | Screening questions with the ideal and the given answer. Only with `details`. In the CSV this is one cell of text; in the JSON it is a list. |
+  | `file` | The CV file name; empty when no CV is on disk. |
 
 - **Folder names.** Each job folder is `<Job_Title>_<job_id>`. A folder from an earlier version that is named by ID only is renamed on the next run, with its CVs kept. If the job title cannot be read, the folder is named by ID until a later run can read it. The ID at the end identifies the job, so do not remove it.
 - **File names.** The number at the end of each CV file name is LinkedIn's application ID. The client uses it to identify CVs it has already downloaded, so do not rename files in the output folder.
 - **Missing names.** If applicant names cannot be read, files are named `<applicationId>.pdf`.
 - **Format.** Every CV is a PDF. LinkedIn serves its own PDF rendering of each resume.
-- **Personal data.** CVs are personal data. Keep the output folder out of version control (the included `.gitignore` does this) and store it in line with your data-protection obligations.
+- **Personal data.** CVs and the applicant list (names, and with `details` emails and phone numbers) are personal data. Keep the output folder out of version control (the included `.gitignore` does this) and store it in line with your data-protection obligations.
 
 ## Running on a Linux server
 
