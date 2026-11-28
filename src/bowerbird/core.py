@@ -1,5 +1,6 @@
 """Shared pieces: the stop signal and the pause between requests."""
 import random
+import re
 import time
 from datetime import datetime, timedelta
 
@@ -20,6 +21,19 @@ _pace = QUICK
 def set_slow(on):
     global _pace
     _pace = SLOW if on else QUICK
+
+
+def job_id(value):
+    """The job ID from an ID or from any LinkedIn job link."""
+    m = re.search(r"(?<!\d)\d{8,12}(?!\d)", str(value))
+    if not m:
+        raise Stopped(f"no job ID in {value!r}: give the number or the job link")
+    return m.group(0)
+
+
+def slug(text):
+    """Text made safe for a file or folder name."""
+    return "_".join(re.sub(r"[^\w\- ]", "", text).split())
 
 
 def pause():

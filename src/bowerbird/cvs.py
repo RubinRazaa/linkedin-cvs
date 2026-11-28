@@ -1,5 +1,6 @@
 """Applicant CVs from the hiring dashboard, through a real logged-in Chrome window."""
 import csv
+import fcntl
 import json
 import os
 import random
@@ -11,8 +12,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from .core import BASE, REST, REST_EVERY, Stopped, deadline, pause, set_slow
-from .jobs import save_jd
+from .core import BASE, REST, REST_EVERY, Stopped, deadline, pause, set_slow, slug
+from .core import job_id as to_id
+from .jobs import find_folder, job_folder
 
 PROFILE = Path.home() / ".bowerbird" / "chrome-profile"
 VIEWER = "com.linkedin.sdui.flagshipnav.hiring.appeval.ResumeViewer"
@@ -50,7 +52,7 @@ def parse_pdf_url(text):
 
 
 def filename(app_id, name):
-    safe = "_".join(re.sub(r"[^\w\- ]", "", name).split())
+    safe = slug(name)
     return f"{safe}_{app_id}.pdf" if safe else f"{app_id}.pdf"
 
 
@@ -85,11 +87,16 @@ class Client:
     def __init__(self, playwright, proxy=None):
         from playwright.sync_api import Error
 
-        self.xvfb = ensure_display()
         before_rename = Path.home() / ".linkedin_cvs"  # keep the login from the old name
         if before_rename.exists() and not PROFILE.parent.exists():
             before_rename.rename(PROFILE.parent)
         PROFILE.mkdir(parents=True, exist_ok=True)
+        self.lock = open(PROFILE.parent / "lock", "w")  # freed when the process ends
+        try:
+            fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise Stopped("another run is active: wait for it to finish")
+        self.xvfb = ensure_display()
         # ponytail: visible Chrome window each run; go headless only if that proves safe.
         self.ctx = playwright.chromium.launch_persistent_context(
             str(PROFILE), channel="chrome", headless=False, chromium_sandbox=True,
@@ -182,6 +189,7 @@ def download_cvs(job_ids=None, out="cvs", limit=None, slow=False, until=None, pr
 
     set_slow(slow)
     end = deadline(until)
+    job_ids = [to_id(j) for j in job_ids or []]
     report = {} if report is None else report
     report.update(saved=[], no_resume=[], stopped=None)
     saved = report["saved"]
@@ -194,13 +202,12 @@ def download_cvs(job_ids=None, out="cvs", limit=None, slow=False, until=None, pr
                               "what LinkedIn shows on the job posts page")
             print(f"{len(job_ids)} job posts: {' '.join(job_ids)}")
             for job_id in job_ids:
-                folder = Path(out) / job_id  # one folder per job, like the Drive layout
-                folder.mkdir(parents=True, exist_ok=True)
-                if not (folder / "job.json").exists():
-                    try:  # public page, no login; never worth stopping the CV run for
-                        save_jd(job_id, folder)
-                    except (Stopped, OSError) as e:
-                        print(f"job {job_id}: job description not saved ({e})")
+                try:  # public page, no login; never worth stopping the CV run for
+                    folder = job_folder(out, job_id)
+                except (Stopped, OSError) as e:
+                    print(f"job {job_id}: job description not saved ({e})")
+                    folder = find_folder(out, job_id) or Path(out) / job_id
+                    folder.mkdir(parents=True, exist_ok=True)
                 have = {f.stem.rsplit("_", 1)[-1] for f in folder.glob("*.pdf")}
                 people = c.applicants(job_id)
                 todo = [(i, name) for i, (name, _) in people.items() if i not in have][:limit]

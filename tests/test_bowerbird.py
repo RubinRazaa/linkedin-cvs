@@ -1,8 +1,10 @@
 """Offline checks of the parsing and timing logic. Nothing here contacts LinkedIn."""
 from datetime import datetime
 
-from bowerbird import core
-from bowerbird.core import BASE, QUICK, SLOW, deadline, set_slow
+import pytest
+
+from bowerbird import core, jobs
+from bowerbird.core import BASE, QUICK, SLOW, Stopped, deadline, job_id, set_slow
 from bowerbird.cvs import filename, logged_out, parse_applicants, parse_pdf_url, write_index
 from bowerbird.jobs import parse_job
 
@@ -60,3 +62,24 @@ def test_write_index(tmp_path):
     write_index(tmp_path, {"111": ("Ann Lee", "in review"), "222": ("", "rejected")})
     assert (tmp_path / "applicants.csv").read_text().splitlines() == [
         "application_id,name,stage,file", "111,Ann Lee,in review,Ann_Lee_111.pdf", "222,,rejected,"]
+
+
+def test_job_id():
+    assert job_id("1234567890") == job_id(1234567890) == "1234567890"
+    assert job_id(f"{BASE}/jobs/view/1234567890/?trk=x") == "1234567890"
+    assert job_id(f"{BASE}/hiring/jobs/2345678901/detail/") == "2345678901"
+    assert job_id(f"{BASE}/jobs/search/?currentJobId=1234567890&start=25") == "1234567890"
+    with pytest.raises(Stopped):
+        job_id("not a job")
+
+
+def test_job_folder(tmp_path, monkeypatch):
+    job = {"title": "Sales / Lead (UAE)", "company": "", "location": "", "url": "", "description": ""}
+    monkeypatch.setattr(jobs, "job_details", lambda job_id: job)
+    (tmp_path / "1234567890").mkdir()  # folder from before titles were used
+    (tmp_path / "1234567890" / "a_1.pdf").write_bytes(b"%PDF")
+    folder = jobs.job_folder(tmp_path, "1234567890")
+    assert folder.name == "Sales_Lead_UAE_1234567890" and (folder / "a_1.pdf").exists()
+    assert [d.name for d in tmp_path.iterdir()] == [folder.name]
+    monkeypatch.setattr(jobs, "job_details", None)  # second time: no request at all
+    assert jobs.job_folder(tmp_path, "1234567890") == folder

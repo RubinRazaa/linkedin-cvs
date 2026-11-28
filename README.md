@@ -113,7 +113,7 @@ bowerbird [JOB_ID ...] [options]
 
 | Argument or option | Description |
 |---|---|
-| `JOB_ID ...` | Job posts to process. Default: every job on the **Open** tab. |
+| `JOB_ID ...` | Job posts to process, as job IDs or job links. Default: every job on the **Open** tab. |
 | `--out DIR` | Output folder. Default: `./cvs`. |
 | `--limit N` | Download at most `N` new CVs per job. |
 | `--slow` | Use the slow pace. See [Pacing and scheduled runs](#pacing-and-scheduled-runs). |
@@ -124,13 +124,14 @@ bowerbird [JOB_ID ...] [options]
 | `--json` | Print one JSON result on standard output. See [JSON result](#json-result). |
 | `--login` | Open the Chrome window to sign in or dismiss a LinkedIn prompt. |
 
-The job ID is the number in the job's LinkedIn URL: `linkedin.com/jobs/view/1234567890`, or the value after `jobId=`.
+The job ID is the number in the job's LinkedIn URL: `linkedin.com/jobs/view/1234567890`, or the value after `jobId=`. You can also paste the whole link (in quotes); the ID is read from it.
 
 **Examples**
 
 ```bash
 bowerbird 1234567890               # one job post
 bowerbird 1234567890 2345678901    # several job posts
+bowerbird "https://www.linkedin.com/jobs/view/1234567890/"   # a job link works too
 bowerbird --out /data/cvs          # a different output folder
 bowerbird --slow --until 06:00     # nightly run
 bowerbird --jd 1234567890          # job description only
@@ -147,7 +148,7 @@ bowerbird --json --out /data/cvs
 ```
 
 ```json
-{"ok": true, "stopped": null, "saved": ["/data/cvs/1234567890/Jane_Doe_30000000001.pdf"], "no_resume": ["30000000002"]}
+{"ok": true, "stopped": null, "saved": ["/data/cvs/Sales_Manager_1234567890/Jane_Doe_30000000001.pdf"], "no_resume": ["30000000002"]}
 ```
 
 | Field | Description |
@@ -177,7 +178,7 @@ for path in files:
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `job_ids` | `list[str]` or `None` | `None` | Job posts to process. `None` selects every job on the **Open** tab. |
+| `job_ids` | `list[str]` or `None` | `None` | Job posts to process, as job IDs or job links. `None` selects every job on the **Open** tab. |
 | `out` | `str` or `Path` | `"cvs"` | Output folder. One subfolder is created per job. |
 | `limit` | `int` or `None` | `None` | Maximum number of new CVs per job. `None` means no maximum. |
 | `slow` | `bool` | `False` | Use the slow pace. |
@@ -262,15 +263,16 @@ Start it once each evening with the scheduler you already use: cron, your own ap
 Run `crontab -e` and add one line:
 
 ```
-0 23 * * * flock -n /tmp/bowerbird.lock /full/path/to/bowerbird --slow --until 06:00 --out /data/cvs >> /data/bowerbird.log 2>&1
+0 23 * * * /full/path/to/bowerbird --slow --until 06:00 --out /data/cvs >> /data/bowerbird.log 2>&1
 ```
 
 | Part | Purpose |
 |---|---|
 | `0 23 * * *` | Starts the run at 23:00 every day, in the server's time zone. |
-| `flock -n ...lock` | Skips the run if the previous one is still active, so runs never overlap. `flock` is not available on macOS; omit it there. |
 | `/full/path/to/bowerbird` | The absolute path printed by `which bowerbird`. |
 | `>> ...log 2>&1` | Appends all output, including any `Stopped:` line, to a log file. |
+
+Runs never overlap: if one is still active, a second one stops straight away with `Stopped: another run is active`.
 
 Sign in with `bowerbird --login` before the first scheduled run. A scheduled run cannot sign in: if the session has ended, it waits 5 minutes and then stops with `Stopped: not logged in to LinkedIn`.
 
@@ -287,14 +289,14 @@ An agent that schedules or runs this tool needs the following:
 | Failure | Non-zero exit status and one line that begins with `Stopped:`. Do not retry automatically; report the line to a person. |
 | Machine-readable result | Add `--json`; standard output is then one JSON object. See [JSON result](#json-result). |
 | Sign-in | Must be completed by a person with `bowerbird --login`. Never give an agent the LinkedIn password. |
-| Output | All files are under `<folder>/<job_id>/`. Re-running is safe: existing CVs are skipped. |
+| Output | All files are under `<folder>/<Job_Title>_<job_id>/`. Re-running is safe: existing CVs are skipped. |
 | Job descriptions | `bowerbird --jd <job_id> ...` requires no login. |
 
 ## Output
 
 ```
 cvs/
-└── 1234567890/                      one folder per job post, named by job ID
+└── Sales_Manager_1234567890/        one folder per job post: <Job_Title>_<job_id>
     ├── Jane_Doe_30000000001.pdf     <Applicant_Name>_<applicationId>.pdf
     ├── Sam_Lee_30000000002.pdf
     ├── job.json                     all job details
@@ -304,6 +306,7 @@ cvs/
 
 - **Applicant index.** With `--index`, each job folder gets `applicants.csv` with the columns `application_id`, `name`, `stage` (`in review`, `shortlisted` or `rejected`) and `file`. It lists every applicant, and `file` is empty for anyone whose CV is not on disk. The file is rewritten on each run.
 
+- **Folder names.** Each job folder is `<Job_Title>_<job_id>`. A folder from an earlier version that is named by ID only is renamed on the next run, with its CVs kept. If the job title cannot be read, the folder is named by ID until a later run can read it. The ID at the end identifies the job, so do not remove it.
 - **File names.** The number at the end of each CV file name is LinkedIn's application ID. The client uses it to identify CVs it has already downloaded, so do not rename files in the output folder.
 - **Missing names.** If applicant names cannot be read, files are named `<applicationId>.pdf`.
 - **Format.** Every CV is a PDF. LinkedIn serves its own PDF rendering of each resume.
@@ -394,6 +397,7 @@ Requests are issued from within the signed-in LinkedIn page, so the session neve
 |---|---|---|
 | `Log in to LinkedIn in the Chrome window that just opened` | There is no stored session, or it has ended. | Sign in within 5 minutes, or run `bowerbird --login`. |
 | `Stopped: not logged in to LinkedIn` | The saved session has ended and nobody signed in within 5 minutes. | Run `bowerbird --login` and sign in. |
+| `Stopped: another run is active` | A run is already using the saved login (for example the nightly run). Only one run works at a time. | Wait for the other run to finish, then start again. |
 | `Stopped: no open job posts visible` | The job posts page lists no open jobs. A LinkedIn prompt may be covering the page, or the account has none. | Run `bowerbird --login` and inspect the page, or pass job IDs explicitly. |
 | `Stopped: HTTP ... (logged out, or LinkedIn challenged the request)` | LinkedIn declined a request. | Run `bowerbird --login` and check the account for a verification or restriction notice. Wait before the next run. |
 | `Stopped: could not reach LinkedIn through ...` | The proxy or tunnel is not running, or the network is down. | Restart the tunnel, then run again. |

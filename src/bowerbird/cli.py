@@ -13,7 +13,7 @@
 
 No cookies to copy. The first run opens a Chrome window: log in to LinkedIn
 there once. The login is kept in ~/.bowerbird and reused on every later run.
-CVs land in cvs/<job_id>/ next to job.json and job.txt (the job description);
+CVs land in cvs/<Job_Title>_<job_id>/ next to job.json and job.txt (the job description);
 CVs already there are skipped.
 
 From Python:  from bowerbird import download_cvs, job_details

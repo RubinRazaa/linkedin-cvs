@@ -6,7 +6,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from .core import BASE, Stopped, pause, set_slow
+from .core import BASE, Stopped, pause, set_slow, slug
+from .core import job_id as to_id
 
 
 def _text(fragment):
@@ -39,6 +40,7 @@ def parse_job(page):
 
 def job_details(job_id):
     """Public details of a job post as a dict. No login and no Chrome needed."""
+    job_id = to_id(job_id)  # a job link works too
     req = urllib.request.Request(f"{BASE}/jobs-guest/jobs/api/jobPosting/{job_id}",
                                  headers={"User-Agent": "Mozilla/5.0"})
     try:
@@ -52,25 +54,40 @@ def job_details(job_id):
     return job
 
 
+def find_folder(out, job_id):
+    """The folder already holding this job, whatever title it was named with."""
+    return next((d for d in Path(out).glob(f"*{job_id}")
+                 if d.is_dir() and d.name.rsplit("_", 1)[-1] == job_id), None)
+
+
+def job_folder(out, job_id, refresh=False):
+    """The folder of a job, <out>/<Job_Title>_<job_id>, with job.json and job.txt in it.
+
+    The details are fetched once (again with refresh=True). An older folder of the
+    same job, named by ID only or with an earlier title, is renamed, never duplicated.
+    """
+    old = find_folder(out, job_id)
+    cached = old and not refresh and (old / "job.json").exists()
+    job = json.loads((old / "job.json").read_text()) if cached else job_details(job_id)
+    folder = Path(out) / "_".join(filter(None, [slug(job["title"])[:60], job_id]))
+    if old and old != folder:
+        old.rename(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    if not cached:
+        (folder / "job.json").write_text(json.dumps(job, indent=2, ensure_ascii=False))
+        (folder / "job.txt").write_text(
+            f"{job['title']}\n{job['company']} | {job['location']}\n{job['url']}\n\n{job['description']}\n")
+    return folder
+
+
 def download_jds(job_ids, out="cvs", slow=False):
-    """Save <out>/<job_id>/job.json and job.txt for each job. Returns the job.json paths."""
+    """Save job.json and job.txt in each job's folder. Returns the job.json paths."""
     set_slow(slow)
+    job_ids = [to_id(j) for j in job_ids]
     saved = []
     for n, job_id in enumerate(job_ids):
         if n:
             pause()
-        folder = Path(out) / str(job_id)
-        job = save_jd(job_id, folder)
-        saved.append(folder / "job.json")
-        print(f"job {job_id}: saved {job['title']}")
+        saved.append(job_folder(out, job_id, refresh=True) / "job.json")
+        print(f"job {job_id}: saved {saved[-1].parent.name}")
     return saved
-
-
-def save_jd(job_id, folder):
-    """Write job.json and job.txt into folder. Returns the job dict."""
-    job = job_details(job_id)
-    folder.mkdir(parents=True, exist_ok=True)
-    (folder / "job.json").write_text(json.dumps(job, indent=2, ensure_ascii=False))
-    (folder / "job.txt").write_text(
-        f"{job['title']}\n{job['company']} | {job['location']}\n{job['url']}\n\n{job['description']}\n")
-    return job
