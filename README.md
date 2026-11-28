@@ -11,11 +11,12 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT"></a>
 </p>
 
-bowerbird is a command-line tool and Python library that downloads the CVs of applicants to your LinkedIn job posts, and exports the description and details of any public job post. It is named after the bowerbird, which gathers objects and arranges them neatly.
+bowerbird is a command-line tool and Python library that collects everything about your LinkedIn job posts into one folder per job: each applicant's CV, the job description, and the list of applicants with their stage. You choose which of these a run collects. It is named after the bowerbird, which gathers objects and arranges them neatly.
 
 ```bash
-bowerbird                  # download every new CV from every open job post
-bowerbird --jd 1234567890  # export a job description; no login required
+bowerbird                  # every open job post: new CVs, job description, applicant list
+bowerbird --include cv     # only the CVs
+bowerbird --include job 1234567890  # export a job description; no login required
 ```
 
 It works with the standard LinkedIn hiring dashboard (`linkedin.com/hiring`). LinkedIn Recruiter is not supported.
@@ -26,11 +27,13 @@ It works with the standard LinkedIn hiring dashboard (`linkedin.com/hiring`). Li
 ## Features
 
 - **One command for every applicant.** Finds your open job posts and downloads each applicant's CV as a PDF, across the In Review, Shortlist and Rejected stages.
+- **You choose what to collect.** One `--include` list selects CVs, job descriptions and applicant lists; the Python function takes the same list.
+- **Folders you can read.** Each job gets a folder named after its title, with an applicant list as CSV and JSON.
 - **Incremental.** CVs already on disk are skipped, so each run downloads only new applicants.
 - **No cookie handling.** You sign in once in a dedicated Chrome window. The session is stored locally and reused.
 - **Job descriptions without login.** Exports the title, company, location, criteria and full description of any public job post.
 - **Two paces.** A quick pace for interactive use and a slow pace for unattended runs.
-- **Built for scheduling.** A single command runs nightly, stops at a set time and resumes the next night.
+- **Built for apps and scheduling.** A JSON result for calling from your own application, a built-in guard against two runs at once, and a single command that runs nightly, stops at a set time and resumes the next night.
 - **Read-only.** It never rates, shortlists, rejects or messages an applicant.
 - **Small.** One Python file with one dependency.
 
@@ -119,8 +122,7 @@ bowerbird [JOB_ID ...] [options]
 | `--slow` | Use the slow pace. See [Pacing and scheduled runs](#pacing-and-scheduled-runs). |
 | `--until HH:MM` | Stop cleanly at this local time. The next run continues with the remainder. |
 | `--proxy URL` | Send Chrome's traffic through a proxy, for example `socks5://localhost:1080`. See [Using your own network from a server](#using-your-own-network-from-a-server). |
-| `--jd` | Export job descriptions for the given job IDs instead of CVs. No login required. |
-| `--index` | Also write `applicants.csv` in each job folder. See [Output](#output). |
+| `--include PARTS` | What to collect, comma-separated. Default: `cv,job,applicants` (everything). See [Choosing what to collect](#choosing-what-to-collect). |
 | `--json` | Print one JSON result on standard output. See [JSON result](#json-result). |
 | `--login` | Open the Chrome window to sign in or dismiss a LinkedIn prompt. |
 
@@ -134,8 +136,28 @@ bowerbird 1234567890 2345678901    # several job posts
 bowerbird "https://www.linkedin.com/jobs/view/1234567890/"   # a job link works too
 bowerbird --out /data/cvs          # a different output folder
 bowerbird --slow --until 06:00     # nightly run
-bowerbird --jd 1234567890          # job description only
+bowerbird --include cv             # only the CVs
+bowerbird --include job 1234567890 # job description only
 ```
+
+### Choosing what to collect
+
+A run collects everything by default. Pass `--include` with a comma-separated list to collect less.
+
+| Part | What it saves in each job folder |
+|---|---|
+| `cv` | Each applicant's CV as a PDF. CVs already on disk are skipped. |
+| `job` | `job.json` and `job.txt`, and the job title in the folder name. Without this part a new folder is named by job ID only. |
+| `applicants` | `applicants.csv` and `applicants.json`: every applicant with their stage and CV file name. |
+
+```bash
+bowerbird --include cv                # CVs only
+bowerbird --include cv,job            # CVs and job description
+bowerbird --include applicants        # refresh the applicant lists; downloads no CVs
+bowerbird --include job 1234567890    # job description only: no login, no Chrome
+```
+
+`job` on its own, with job IDs given, reads only LinkedIn's public job page, so it needs no login and does not involve your account. Every other combination uses the signed-in Chrome window.
 
 **Exit status.** `0` on success. On failure the command exits with a non-zero status and prints one line that begins with `Stopped:` and states the reason.
 
@@ -161,10 +183,11 @@ bowerbird --json --out /data/cvs
 ## Python API
 
 ```python
-from bowerbird import download_cvs, Stopped
+from bowerbird import download, Stopped
 
 try:
-    files = download_cvs()
+    files = download()                    # everything
+    # files = download(include=["cv"])   # only the CVs
 except Stopped as error:
     print(f"Run stopped: {error}")
     files = []
@@ -174,38 +197,38 @@ for path in files:
     ...  # for example, upload `path` to the storage folder for `job_id`
 ```
 
-### `download_cvs(job_ids=None, out="cvs", limit=None, slow=False, until=None, proxy=None, index=False, report=None)`
+### `download(job_ids=None, out="cvs", include=("cv", "job", "applicants"), limit=None, slow=False, until=None, proxy=None, report=None)`
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `job_ids` | `list[str]` or `None` | `None` | Job posts to process, as job IDs or job links. `None` selects every job on the **Open** tab. |
 | `out` | `str` or `Path` | `"cvs"` | Output folder. One subfolder is created per job. |
+| `include` | list of `str` | all three | What to collect: any of `"cv"`, `"job"`, `"applicants"`. See [Choosing what to collect](#choosing-what-to-collect). |
 | `limit` | `int` or `None` | `None` | Maximum number of new CVs per job. `None` means no maximum. |
 | `slow` | `bool` | `False` | Use the slow pace. |
 | `until` | `str` (`"HH:MM"`) or `None` | `None` | Stop cleanly at this local time and return the files saved so far. |
 | `proxy` | `str` or `None` | `None` | Proxy URL for Chrome, for example `"socks5://localhost:1080"`. |
-| `index` | `bool` | `False` | Also write `applicants.csv` in each job folder. |
 | `report` | `dict` or `None` | `None` | A dict that the call fills with `saved`, `no_resume` and `stopped`. It is updated as the run proceeds, so it holds the partial result when `Stopped` is raised. |
 
 **Returns** a list of `pathlib.Path`, one for each CV saved during this call. CVs that already existed are skipped and are not included, so the list contains exactly the new files.
 
-**Raises** `Stopped` when the run cannot continue: the session has ended, LinkedIn returned an unexpected response, or no open job posts are visible. The client does not retry. Files saved before the exception remain on disk, and the next call continues from that point.
+**Raises** `Stopped` when the run cannot continue or `include` names an unknown part: the session has ended, LinkedIn returned an unexpected response, or no open job posts are visible. The client does not retry. Files saved before the exception remain on disk, and the next call continues from that point.
 
 The call blocks until the run is complete. Allow about 7 seconds per CV at the quick pace and about 35 seconds at the slow pace. In a web application, run it as a background task, and run only one download at a time.
 
 ## Job descriptions
 
 ```bash
-bowerbird --jd 1234567890 2345678901
+bowerbird --include job 1234567890 2345678901
 ```
 
 Job descriptions are read from LinkedIn's public job page. This requires no login and no Chrome, and does not involve your LinkedIn account. It works for any publicly visible job post.
 
-Job IDs are required. Without a login, the client cannot list the job posts that belong to you.
+Give the job IDs or links. Without them the client has to open the signed-in Chrome window to list your open job posts.
 
 Each job produces two files in its folder: `job.json` with every field, and `job.txt` with the title, company, location, link and description as plain text.
 
-A CV run writes the same two files automatically for every job it processes, unless they already exist. `--jd` is needed only to export a description without downloading CVs, or to refresh one. If the description cannot be fetched, the CV run reports it and continues.
+A normal run writes the same two files for every job it processes, unless they already exist. `--include job` is needed only to export a description without downloading CVs, or to refresh one. If the description cannot be fetched during a normal run, the run reports it and continues.
 
 ```python
 from bowerbird import job_details, download_jds
@@ -290,7 +313,7 @@ An agent that schedules or runs this tool needs the following:
 | Machine-readable result | Add `--json`; standard output is then one JSON object. See [JSON result](#json-result). |
 | Sign-in | Must be completed by a person with `bowerbird --login`. Never give an agent the LinkedIn password. |
 | Output | All files are under `<folder>/<Job_Title>_<job_id>/`. Re-running is safe: existing CVs are skipped. |
-| Job descriptions | `bowerbird --jd <job_id> ...` requires no login. |
+| Job descriptions | `bowerbird --include job <job_id> ...` requires no login. |
 
 ## Output
 
@@ -301,10 +324,11 @@ cvs/
     ├── Sam_Lee_30000000002.pdf
     ├── job.json                     all job details
     ├── job.txt                      readable job description
-    └── applicants.csv               with --index: one row per applicant
+    ├── applicants.csv               one row per applicant
+    └── applicants.json              the same list, for code
 ```
 
-- **Applicant index.** With `--index`, each job folder gets `applicants.csv` with the columns `application_id`, `name`, `stage` (`in review`, `shortlisted` or `rejected`) and `file`. It lists every applicant, and `file` is empty for anyone whose CV is not on disk. The file is rewritten on each run.
+- **Applicant list.** Each job folder gets `applicants.csv` and `applicants.json` with the fields `application_id`, `name`, `stage` (`in review`, `shortlisted` or `rejected`) and `file`. It lists every applicant, and `file` is empty for anyone whose CV is not on disk. Both files are rewritten on each run.
 
 - **Folder names.** Each job folder is `<Job_Title>_<job_id>`. A folder from an earlier version that is named by ID only is renamed on the next run, with its CVs kept. If the job title cannot be read, the folder is named by ID until a later run can read it. The ID at the end identifies the job, so do not remove it.
 - **File names.** The number at the end of each CV file name is LinkedIn's application ID. The client uses it to identify CVs it has already downloaded, so do not rename files in the output folder.
@@ -371,14 +395,14 @@ bowerbird --login --proxy socks5://localhost:1080
 bowerbird --slow --until 06:00 --proxy socks5://localhost:1080
 ```
 
-From Python: `download_cvs(proxy="socks5://localhost:1080")`.
+From Python: `download(proxy="socks5://localhost:1080")`.
 
 | Behaviour | Detail |
 |---|---|
 | Computer must stay on | The tunnel exists only while the office computer is on and the `ssh` command is running. |
 | No fallback | If the tunnel is down, the run stops with `Stopped: could not reach LinkedIn through ...`. It never falls back to the server's own address. |
 | Be consistent | Use the proxy on every run, or on none. Alternating between the office address and the server address is itself a location mismatch. |
-| Scope | The proxy applies to CV downloads and `--login`. Job descriptions, whether from `--jd` or fetched during a CV run, do not use it; that request is public and involves no account. |
+| Scope | The proxy applies to CV downloads and `--login`. Job descriptions do not use it; that request is public and involves no account. |
 | Supported proxies | `socks5://host:port` and `http://host:port`. Proxies that need a username and password are not supported over SOCKS. |
 
 ## How it works
@@ -402,7 +426,7 @@ Requests are issued from within the signed-in LinkedIn page, so the session neve
 | `Stopped: HTTP ... (logged out, or LinkedIn challenged the request)` | LinkedIn declined a request. | Run `bowerbird --login` and check the account for a verification or restriction notice. Wait before the next run. |
 | `Stopped: could not reach LinkedIn through ...` | The proxy or tunnel is not running, or the network is down. | Restart the tunnel, then run again. |
 | `Stopped: resume link returned HTTP ..., not a PDF` | The download link did not return a resume. | As above. |
-| `Stopped: job ...: HTTP 429` (with `--jd`) | Too many public requests in a short period. | Wait a minute, then run again. |
+| `Stopped: job ...: HTTP 429` (with `--include job`) | Too many public requests in a short period. | Wait a minute, then run again. |
 | `job ...: 0 applicants` for a job that has applicants | The signed-in account cannot view that job's applicants. | Sign in with the account that owns the job. |
 | `no resume: <name>` | The applicant did not attach a resume. | No action required; the run continues. |
 | Error stating that the profile is already in use | A client Chrome window is still open, or another run is active. | Close the window or wait for the other run, then try again. |

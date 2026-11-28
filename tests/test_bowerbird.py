@@ -1,9 +1,10 @@
 """Offline checks of the parsing and timing logic. Nothing here contacts LinkedIn."""
+import json
 from datetime import datetime
 
 import pytest
 
-from bowerbird import core, jobs
+from bowerbird import core, cvs, jobs
 from bowerbird.core import BASE, QUICK, SLOW, Stopped, deadline, job_id, set_slow
 from bowerbird.cvs import filename, logged_out, parse_applicants, parse_pdf_url, write_index
 from bowerbird.jobs import parse_job
@@ -62,6 +63,8 @@ def test_write_index(tmp_path):
     write_index(tmp_path, {"111": ("Ann Lee", "in review"), "222": ("", "rejected")})
     assert (tmp_path / "applicants.csv").read_text().splitlines() == [
         "application_id,name,stage,file", "111,Ann Lee,in review,Ann_Lee_111.pdf", "222,,rejected,"]
+    assert json.loads((tmp_path / "applicants.json").read_text())[0] == {
+        "application_id": "111", "name": "Ann Lee", "stage": "in review", "file": "Ann_Lee_111.pdf"}
 
 
 def test_job_id():
@@ -83,3 +86,42 @@ def test_job_folder(tmp_path, monkeypatch):
     assert [d.name for d in tmp_path.iterdir()] == [folder.name]
     monkeypatch.setattr(jobs, "job_details", None)  # second time: no request at all
     assert jobs.job_folder(tmp_path, "1234567890") == folder
+
+
+class FakeClient:
+    def __init__(self, *a):
+        pass
+
+    def close(self):
+        pass
+
+    def open_jobs(self):
+        return ["1234567890"]
+
+    def applicants(self, job_id):
+        return {"111": ("Ann Lee", "in review"), "222": ("Bo", "rejected")}
+
+    def pdf_url(self, job_id, app_id):
+        return "u" if app_id == "111" else None
+
+    def pdf(self, url):
+        return b"%PDF"
+
+
+def test_download_include(tmp_path, monkeypatch):
+    pytest.importorskip("playwright")
+    monkeypatch.setattr(cvs, "Client", FakeClient)
+    monkeypatch.setattr(cvs, "pause", lambda: None)
+    monkeypatch.setattr(jobs, "job_details", lambda job_id: {
+        "title": "Sales Lead", "company": "", "location": "", "url": "", "description": ""})
+    report = {}
+    cvs.download(out=tmp_path, include=["cv"], report=report)
+    assert sorted(f.name for f in (tmp_path / "1234567890").iterdir()) == ["Ann_Lee_111.pdf"]
+    assert report["no_resume"] == ["222"]
+    cvs.download(out=tmp_path, report=report)  # everything; the folder gains its title
+    folder = tmp_path / "Sales_Lead_1234567890"
+    assert sorted(f.name for f in folder.iterdir()) == [
+        "Ann_Lee_111.pdf", "applicants.csv", "applicants.json", "job.json", "job.txt"]
+    assert report["saved"] == []  # the CV was already there
+    with pytest.raises(Stopped):
+        cvs.download(include=["emails"])

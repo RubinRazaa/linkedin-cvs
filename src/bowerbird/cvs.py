@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .core import BASE, REST, REST_EVERY, Stopped, deadline, pause, set_slow, slug
 from .core import job_id as to_id
-from .jobs import find_folder, job_folder
+from .jobs import download_jds, find_folder, job_folder
 
 PROFILE = Path.home() / ".bowerbird" / "chrome-profile"
 VIEWER = "com.linkedin.sdui.flagshipnav.hiring.appeval.ResumeViewer"
@@ -22,6 +22,7 @@ PAGE_SIZE = 30
 VIRTUAL_DISPLAY = ":99"  # used on Linux servers with no screen
 # every stage the dashboard shows, and its name in applicants.csv
 STAGES = {"IN_REVIEW": "in review", "HIRER_SHORTLISTED": "shortlisted", "REJECTED": "rejected"}
+PARTS = ("cv", "job", "applicants")  # what a run can collect
 LOGGED_OUT = ("/login", "/uas/", "/checkpoint", "/authwall", "/signup")
 
 # Runs inside the logged-in LinkedIn page, so the session never leaves the browser.
@@ -61,12 +62,15 @@ def logged_out(url):
 
 
 def write_index(folder, people):
-    """applicants.csv: one row per applicant; 'file' is empty when no CV is saved."""
+    """applicants.csv and applicants.json: one entry per applicant; 'file' is empty when no CV is saved."""
     files = {f.stem.rsplit("_", 1)[-1]: f.name for f in folder.glob("*.pdf")}
+    rows = [{"application_id": i, "name": name, "stage": stage, "file": files.get(i, "")}
+            for i, (name, stage) in people.items()]
     with open(folder / "applicants.csv", "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(["application_id", "name", "stage", "file"])
-        w.writerows([i, name, stage, files.get(i, "")] for i, (name, stage) in people.items())
+        w = csv.DictWriter(f, ["application_id", "name", "stage", "file"])
+        w.writeheader()
+        w.writerows(rows)
+    (folder / "applicants.json").write_text(json.dumps(rows, indent=2, ensure_ascii=False))
 
 
 def ensure_display():
@@ -175,42 +179,57 @@ class Client:
         return data
 
 
-def download_cvs(job_ids=None, out="cvs", limit=None, slow=False, until=None, proxy=None,
-                 index=False, report=None):
-    """Download new CVs. job_ids=None means every open job post. Returns saved paths.
+def download(job_ids=None, out="cvs", include=PARTS, limit=None, slow=False, until=None,
+             proxy=None, report=None):
+    """Collect the chosen parts for each job post. Returns the saved CV paths.
 
+    job_ids=None means every open job post; IDs and job links both work.
+    include picks what to collect, any of:
+      "cv"          each applicant's CV as a PDF (CVs already on disk are skipped)
+      "job"         job.json and job.txt, and the job title in the folder name
+      "applicants"  applicants.csv and applicants.json (id, name, stage, file)
     until="06:00" stops cleanly at that local time; the next run continues with the rest.
     proxy="socks5://localhost:1080" sends Chrome's traffic through that proxy.
-    index=True also writes applicants.csv (id, name, stage, file) in each job folder.
     report={} is filled as the run goes (saved, no_resume, stopped), so it is still
     there when the run raises Stopped.
     """
     from playwright.sync_api import sync_playwright
 
+    include = set(include)
+    if not include or include - set(PARTS):
+        raise Stopped(f"include takes any of: {', '.join(PARTS)}")
     set_slow(slow)
     end = deadline(until)
     job_ids = [to_id(j) for j in job_ids or []]
     report = {} if report is None else report
     report.update(saved=[], no_resume=[], stopped=None)
     saved = report["saved"]
+    if job_ids and include == {"job"}:  # public pages only: no login, no Chrome
+        download_jds(job_ids, out, slow)
+        return saved
     with sync_playwright() as pw:
         c = Client(pw, proxy)
         try:
-            job_ids = list(job_ids or c.open_jobs())
+            job_ids = job_ids or c.open_jobs()
             if not job_ids:
                 raise Stopped("no open job posts visible. Run with --login and check "
                               "what LinkedIn shows on the job posts page")
             print(f"{len(job_ids)} job posts: {' '.join(job_ids)}")
             for job_id in job_ids:
-                try:  # public page, no login; never worth stopping the CV run for
-                    folder = job_folder(out, job_id)
-                except (Stopped, OSError) as e:
-                    print(f"job {job_id}: job description not saved ({e})")
-                    folder = find_folder(out, job_id) or Path(out) / job_id
-                    folder.mkdir(parents=True, exist_ok=True)
+                folder = find_folder(out, job_id) or Path(out) / job_id
+                if "job" in include:
+                    try:  # public page, no login; never worth stopping the run for
+                        folder = job_folder(out, job_id)
+                    except (Stopped, OSError) as e:
+                        print(f"job {job_id}: job description not saved ({e})")
+                folder.mkdir(parents=True, exist_ok=True)
+                if include == {"job"}:
+                    continue
                 have = {f.stem.rsplit("_", 1)[-1] for f in folder.glob("*.pdf")}
                 people = c.applicants(job_id)
                 todo = [(i, name) for i, (name, _) in people.items() if i not in have][:limit]
+                if "cv" not in include:
+                    todo = []
                 print(f"job {job_id}: {len(people)} applicants, {len(todo)} to download")
                 try:
                     for app_id, name in todo:
@@ -231,7 +250,7 @@ def download_cvs(job_ids=None, out="cvs", limit=None, slow=False, until=None, pr
                         if slow and len(saved) % REST_EVERY == 0:
                             time.sleep(random.uniform(*REST))
                 finally:
-                    if index:
+                    if "applicants" in include:
                         write_index(folder, people)
         finally:
             c.close()

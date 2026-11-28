@@ -7,16 +7,16 @@
     bowerbird --slow --until 06:00   nightly run: stop at 06:00, continue next night
     bowerbird --proxy socks5://localhost:1080   send Chrome through your own network
     bowerbird --login          open the window to log in or clear a prompt
-    bowerbird --jd JOB_ID      job description and details; no login, no Chrome
-    bowerbird --index          also write applicants.csv in each job folder
+    bowerbird --include cv     only the CVs (default: cv,job,applicants)
+    bowerbird --include job JOB_ID   job description only; no login, no Chrome
     bowerbird --json           print one JSON result on stdout, for calling from an app
 
 No cookies to copy. The first run opens a Chrome window: log in to LinkedIn
 there once. The login is kept in ~/.bowerbird and reused on every later run.
-CVs land in cvs/<Job_Title>_<job_id>/ next to job.json and job.txt (the job description);
-CVs already there are skipped.
+Each job gets cvs/<Job_Title>_<job_id>/ with the CVs, job.json and job.txt (the job
+description) and applicants.csv/.json (the applicant list). CVs already there are skipped.
 
-From Python:  from bowerbird import download_cvs, job_details
+From Python:  from bowerbird import download, job_details
 """
 import argparse
 import contextlib
@@ -24,8 +24,7 @@ import json
 import sys
 
 from .core import Stopped, deadline
-from .cvs import download_cvs, login
-from .jobs import download_jds
+from .cvs import PARTS, download, login
 
 
 def main():
@@ -39,15 +38,13 @@ def main():
                    help="stop cleanly at this local time; the next run continues")
     p.add_argument("--proxy", metavar="URL",
                    help="send Chrome through this proxy, e.g. socks5://localhost:1080")
-    p.add_argument("--index", action="store_true",
-                   help="also write applicants.csv (id, name, stage, file) in each job folder")
+    p.add_argument("--include", metavar="PARTS", default=",".join(PARTS),
+                   type=lambda v: [x.strip() for x in v.split(",") if x.strip()],
+                   help=f"what to collect, comma-separated (default: {','.join(PARTS)})")
     p.add_argument("--json", action="store_true",
                    help="print one JSON result on stdout; progress goes to stderr")
     p.add_argument("--login", action="store_true", help="open the window to log in or clear a prompt")
-    p.add_argument("--jd", action="store_true", help="save the job description and details; no login needed")
     a = p.parse_args()
-    if a.jd and not a.job_ids:
-        sys.exit("--jd needs at least one job ID")
     report = {"saved": [], "no_resume": [], "stopped": None}
     error = None
     # With --json, stdout carries the result only.
@@ -55,14 +52,11 @@ def main():
         try:
             if a.login:
                 return login(a.proxy)
-            if a.jd:
-                report["saved"] = download_jds(a.job_ids, a.out, a.slow)
-            else:
-                download_cvs(a.job_ids, a.out, a.limit, a.slow, a.until, a.proxy, a.index, report)
+            download(a.job_ids, a.out, a.include, a.limit, a.slow, a.until, a.proxy, report)
         except Stopped as e:
             error = str(e)
         else:
-            print(f"done: {len(report['saved'])} {'job posts' if a.jd else 'CVs'} saved under {a.out}/")
+            print(f"done: {len(report['saved'])} CVs saved under {a.out}/")
     if a.json:
         print(json.dumps({"ok": error is None, "stopped": error or report["stopped"],
                           "saved": [str(f) for f in report["saved"]],
