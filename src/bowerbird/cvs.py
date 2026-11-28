@@ -311,13 +311,15 @@ def download(job_ids=None, out="cvs", include=DEFAULT, limit=None, slow=False, u
                     continue
                 have = {f.stem.rsplit("_", 1)[-1] for f in folder.glob("*.pdf")}
                 people = c.applicants(job_id)
-                try:  # details from an earlier run are kept and never asked for twice
+                # Details an earlier run found are kept and not asked for again. A lookup
+                # that found nothing (a changed layout?) is tried again on the next run.
+                try:
                     known = {r["application_id"]: r for r in
                              json.loads((folder / "applicants.json").read_text())}
                 except (OSError, ValueError, KeyError, TypeError):
                     known = {}
                 for i, p in people.items():
-                    if isinstance(known.get(i, {}).get("screening"), list):
+                    if known.get(i, {}).get("email") or known.get(i, {}).get("screening"):
                         p.update({k: known[i].get(k, "") for k in ("email", "phone", "screening")})
                 lookups = [i for i, p in people.items() if "screening" not in p][:limit]
                 if "details" not in include:
@@ -338,8 +340,11 @@ def download(job_ids=None, out="cvs", include=DEFAULT, limit=None, slow=False, u
                     for n, app_id in enumerate(lookups, 1):
                         if out_of_time():
                             return saved
-                        people[app_id].update(c.details(job_id, app_id))
-                        print(f"  details {n}/{len(lookups)}", flush=True)
+                        found = c.details(job_id, app_id)
+                        people[app_id].update(found)
+                        print(f"  details {n}/{len(lookups)}"
+                              + ("" if found["email"] or found["screening"] else ": nothing found"),
+                              flush=True)
                         if slow and n % REST_EVERY == 0:
                             time.sleep(random.uniform(*REST))
                     for app_id, name in todo:

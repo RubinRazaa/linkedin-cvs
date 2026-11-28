@@ -1,9 +1,9 @@
 <h1 align="center">
-  <img src="assets/logo.svg" alt="bowerbird" width="240">
+  <img src="assets/logo.svg" alt="bowerbird: LinkedIn applicant resume downloader" width="240">
 </h1>
 
 <p align="center">
-  <b>Collects the CVs of applicants to your LinkedIn job posts and arranges them in one folder per job.</b>
+  <b>LinkedIn applicant resume downloader. Collects the CVs of everyone who applied to your LinkedIn job posts and arranges them in one folder per job.</b>
 </p>
 
 <p align="center">
@@ -18,6 +18,8 @@ bowerbird                  # every open job post: new CVs, job description, appl
 bowerbird --include cv     # only the CVs
 bowerbird --include job 1234567890  # export a job description; no login required
 ```
+
+Use it to bulk download the resumes of LinkedIn job applicants, export the applicant list to CSV or JSON, and feed your own HR system or applicant tracking system, from the command line, from Python, or on a schedule on a server. It needs no LinkedIn Recruiter seat and no browser extension.
 
 It works with the standard LinkedIn hiring dashboard (`linkedin.com/hiring`). LinkedIn Recruiter is not supported.
 
@@ -451,12 +453,18 @@ Requests are issued from within the signed-in LinkedIn page, so the session neve
 
 ## Risks and limitations
 
-- **Account risk.** Automated access is against LinkedIn's terms of service. If an account is flagged, the usual consequence is a forced sign-in or a temporary restriction; a permanent restriction is possible. Keep runs small, use your usual computer and network where possible, and avoid frequent scheduled runs.
-- **No stability guarantee.** The client depends on private requests that LinkedIn can change without notice.
+- **Account risk.** Automated access is against LinkedIn's terms of service. If an account is flagged, the usual consequence is a forced sign-in or a temporary restriction; a permanent restriction is possible. Keep runs small, use your usual computer and network where possible, and avoid frequent scheduled runs. A server in a data centre and a fixed nightly pattern carry more risk than an occasional run on an office computer.
+- **`details` makes more requests.** Email, phone and screening answers cost two more requests per applicant, the heaviest thing the client does. Use `details` only when you need it, and with `--slow` for large jobs. Each applicant is looked up once.
+- **Applicants may be marked as viewed.** It is not known whether downloading a CV or looking up details marks the applicant as viewed in LinkedIn, as opening the applicant by hand does. Assume it can.
+- **The session ends.** LinkedIn ends saved sessions from time to time. A person then has to sign in again with `bowerbird --login`; scheduled runs stop until that is done.
+- **No stability guarantee.** The client depends on private requests that LinkedIn can change without notice. After a change, some fields can come back empty without an error; check the applicant list from time to time.
+- **English interface.** Names, dates, scores, phone numbers and screening answers are read from English page text. With the LinkedIn account set to another language these fields are empty.
+- **Screening questions.** Only questions that have an ideal answer are collected. Free-text questions are not.
+- **No profile links.** The applicant's LinkedIn profile address is not collected.
 - **Open job posts by default.** Closed and draft job posts are not processed unless you pass the ID of a closed job.
 - **LinkedIn applications only.** Applicants who applied on an external company website have no CV on LinkedIn.
-- **English interface.** Applicant names are read from English page text.
-- **One run at a time.** The stored session cannot be used by two runs at once.
+- **One run at a time.** The stored session cannot be used by two runs at once; a second run stops straight away.
+- **Personal data.** The output holds CVs, names and, with `details`, emails and phone numbers as plain files. Anyone who can read the output folder, or wherever you copy it, can read all of it. Restrict access and keep it only as long as you need it.
 
 ## License
 

@@ -1,13 +1,14 @@
 [project]
 name = "bowerbird"
 version = "0.1.0"
-description = "Collects the CVs of applicants to your LinkedIn job posts, one folder per job."
+description = "LinkedIn applicant resume downloader: CVs, job descriptions and applicant lists, one folder per job."
 readme = "README.md"
 license = "MIT"
 authors = [{name = "RubinRazaa"}]
 requires-python = ">=3.11"
 dependencies = ["playwright"]
-keywords = ["linkedin", "recruiting", "resume", "cv", "playwright"]
+keywords = ["linkedin", "linkedin-jobs", "applicants", "resume", "resume-downloader", "cv",
+            "recruiting", "hiring", "hr-automation", "ats", "playwright"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: MacOS",

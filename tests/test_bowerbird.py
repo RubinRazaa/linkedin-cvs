@@ -123,6 +123,8 @@ class FakeClient:
 
     def details(self, job_id, app_id):
         FakeClient.lookups += 1
+        if FakeClient.lookups == 1:  # as if LinkedIn's layout had changed
+            return {"email": "", "phone": "", "screening": []}
         return {"email": "a@b.co", "phone": "", "screening": [
             {"question": "Based in Pune?", "ideal": "Yes", "answer": "Yes"}]}
 
@@ -145,11 +147,11 @@ def test_download_include(tmp_path, monkeypatch):
     assert sorted(f.name for f in folder.iterdir()) == [
         "Ann_Lee_111.pdf", "applicants.csv", "applicants.json", "job.json", "job.txt"]
     assert report["saved"] == []  # the CV was already there
-    cvs.download(out=tmp_path, include=["details"], limit=1)
+    cvs.download(out=tmp_path, include=["details"], limit=1)  # finds nothing: not kept
     cvs.download(out=tmp_path, include=["details"])
     cvs.download(out=tmp_path, include=["details"])   # everyone known: no more lookups
     cvs.download(out=tmp_path)                        # a plain run keeps the details
-    assert FakeClient.lookups == 2
+    assert FakeClient.lookups == 3
     rows = json.loads((folder / "applicants.json").read_text())
     assert [r["email"] for r in rows] == ["a@b.co", "a@b.co"]
     assert "Based in Pune? Yes" in (folder / "applicants.csv").read_text()
